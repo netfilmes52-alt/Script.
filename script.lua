@@ -1,574 +1,631 @@
 -- ╔══════════════════════════════════════════════════════╗
--- ║      GLOBAL CHAT HUB v4  •  Delta Executor  💜       ║
+-- ║    GLOBAL CHAT HUB v4  •  Mobile First  💜           ║
+-- ║    • Menu lateral esquerdo                           ║
+-- ║    • Minimizar → bolinha flutuante arrastrável       ║
+-- ║    • UI compacta e otimizada pro celular             ║
 -- ╚══════════════════════════════════════════════════════╝
 local FIREBASE_URL = "https://scriptroblox-adede-default-rtdb.firebaseio.com"
 local POLL_INT     = 3
 local MAX_MSGS     = 50
 local PRES_EXPIRE  = 45
 
-local Players  = game:GetService("Players")
-local UIS      = game:GetService("UserInputService")
-local Tween    = game:GetService("TweenService")
-local Http     = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local UIS     = game:GetService("UserInputService")
+local Tween   = game:GetService("TweenService")
+local Http    = game:GetService("HttpService")
 
 local ME     = Players.LocalPlayer
 local MYNAME = ME.Name
 local MYUID  = ME.UserId
-local MYGAME = game.Name
 
-local MY_AGE  = 0  -- set by age prompt
+-- ── HTTP Detection ────────────────────────────────────────
+local httpFn, httpName = nil, "none"
+local useHttpSvc = false
 
--- ── HTTP ─────────────────────────────────────────────────
-local httpFn, httpName, useHttp = nil,"none",false
-for _,c in ipairs({
+local checks = {
     {n="request",        f=function() if typeof(request)=="function" then return request end end},
     {n="syn.request",    f=function() if syn and syn.request then return syn.request end end},
     {n="http.request",   f=function() if http and http.request then return http.request end end},
     {n="fluxus.request", f=function() if fluxus and fluxus.request then return fluxus.request end end},
     {n="http_request",   f=function() if typeof(http_request)=="function" then return http_request end end},
-}) do local ok,r=pcall(c.f); if ok and r then httpFn=r; httpName=c.n; break end end
+}
+for _, c in ipairs(checks) do
+    local ok, r = pcall(c.f)
+    if ok and r then httpFn = r; httpName = c.n; break end
+end
 if not httpFn then
-    if pcall(function() Http:GetAsync(FIREBASE_URL.."/.json") end) then useHttp=true; httpName="HttpService" end
+    if pcall(function() Http:GetAsync(FIREBASE_URL .. "/.json") end) then
+        useHttpSvc = true; httpName = "HttpService"
+    end
 end
 
-local function doReq(opts)
-    if useHttp then
-        local ok,r=pcall(function()
-            return opts.Method=="GET" and Http:GetAsync(opts.Url)
-                or Http:PostAsync(opts.Url,opts.Body or "",Enum.HttpContentType.ApplicationJson)
+local function doRequest(opts)
+    if useHttpSvc then
+        local ok, r = pcall(function()
+            if opts.Method == "GET" then return Http:GetAsync(opts.Url)
+            else return Http:PostAsync(opts.Url, opts.Body or "", Enum.HttpContentType.ApplicationJson) end
         end)
-        return ok and {Success=true,StatusCode=200,Body=r} or nil
+        if ok then return {Success=true, StatusCode=200, Body=r} end
+        return nil
     end
     if not httpFn then return nil end
-    local ok,r=pcall(httpFn,opts); return ok and r or nil
+    local ok, r = pcall(httpFn, opts)
+    if ok then return r end
+    return nil
 end
 
-local function fbRaw(m,path,d)
-    local opts={Url=FIREBASE_URL..path,Method=m,Headers={["Content-Type"]="application/json"}}
-    if d then opts.Body=Http:JSONEncode(d) end
-    local res=doReq(opts); if not res then return nil,"no_response" end
-    local body=tostring(res.Body or res.body or "")
-    local code=tostring(res.StatusCode or res.status_code or 0)
-    if body=="" or body=="null" then return {},nil end
-    if code=="200" or res.Success then
-        local ok,j=pcall(Http.JSONDecode,Http,body)
-        return ok and j or nil, ok and nil or "json_err"
+-- ── Firebase helpers ──────────────────────────────────────
+local function fbRaw(method, path, data)
+    local opts = {Url=FIREBASE_URL..path, Method=method, Headers={["Content-Type"]="application/json"}}
+    if data then opts.Body = Http:JSONEncode(data) end
+    local res = doRequest(opts)
+    if not res then return nil, "no_response" end
+    local body = tostring(res.Body or res.body or "")
+    local code = tostring(res.StatusCode or res.status_code or "0")
+    if body == "" or body == "null" then return {}, nil end
+    if code == "200" or res.Success then
+        local ok, d = pcall(Http.JSONDecode, Http, body)
+        if ok then return d, nil end
+        return nil, "json_err"
     end
-    return nil,"http_"..code..": "..body:sub(1,50)
+    return nil, "http_" .. code
 end
-local function fbGet(p)    return fbRaw("GET",p) end
-local function fbPost(p,d) return fbRaw("POST",p,d) end
-local function fbPut(p,d)  return fbRaw("PUT",p,d) end
-local function fbDel(p)    return fbRaw("DELETE",p) end
-local function fbList(ch)  return fbRaw("GET","/"..ch..'.json?orderBy="$key"&limitToLast='..MAX_MSGS) end
+local function fbGet(p)    return fbRaw("GET",    p) end
+local function fbPost(p,d) return fbRaw("POST",   p, d) end
+local function fbPut(p,d)  return fbRaw("PUT",    p, d) end
+local function fbDel(p)    return fbRaw("DELETE", p) end
+local function fbList(ch)
+    return fbRaw("GET", "/" .. ch .. '.json?orderBy="$key"&limitToLast=' .. MAX_MSGS)
+end
 
-local function sfen(s) return (tostring(s):gsub("[^%w%-_]","_")) end
 local function mkCode()
-    local c="ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; local r=""
-    for i=1,6 do r=r..c:sub(math.random(1,#c),math.random(1,#c)) end
+    local c = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; local r = ""
+    for _ = 1, 6 do local i = math.random(1,#c); r = r .. c:sub(i,i) end
     return r
 end
+local function sfen(s) return (tostring(s):gsub("[^%w%-_]","_")) end
 
 -- ── Avatar cache ──────────────────────────────────────────
-local avCache={}
-local function fetchAv(uid,lbl)
-    if not uid or uid==0 or not lbl then return end
-    if avCache[uid] then pcall(function() lbl.Image=avCache[uid] end); return end
+local avCache = {}
+local function fetchAvatar(uid, imgLbl)
+    if not uid or uid == 0 or not imgLbl then return end
+    if avCache[uid] then pcall(function() imgLbl.Image = avCache[uid] end); return end
     task.spawn(function()
-        local ok,url=pcall(Players.GetUserThumbnailAsync,Players,uid,Enum.ThumbnailType.HeadShot,Enum.ThumbnailSize.Size48x48)
-        if ok and url then avCache[uid]=url; pcall(function() if lbl and lbl.Parent then lbl.Image=url end end) end
+        local ok, url = pcall(Players.GetUserThumbnailAsync, Players, uid,
+            Enum.ThumbnailType.HeadShot, Enum.ThumbnailSize.Size48x48)
+        if ok and url then
+            avCache[uid] = url
+            pcall(function() if imgLbl.Parent then imgLbl.Image = url end end)
+        end
     end)
 end
 
--- ── Age helpers ───────────────────────────────────────────
-local ageCache={}  -- uid -> age
-local function isMinor(age) return age>0 and age<18 end
-local function isAdult(age) return age>=18 end
-
--- presence store: uid -> {n, age, ts}
-local knownPres={}
-local reportedUsers={} -- keys already reported
-
--- ══════════════════════════════════════════════════════════
--- SCREEN GUI
--- ══════════════════════════════════════════════════════════
+-- ── Destroy old instance ──────────────────────────────────
 pcall(function()
-    local cg=game:GetService("CoreGui"); local o=cg:FindFirstChild("GlobalChatHub"); if o then o:Destroy() end
-end)
-pcall(function()
-    local pg=ME:FindFirstChild("PlayerGui"); if pg then local o=pg:FindFirstChild("GlobalChatHub"); if o then o:Destroy() end end
+    local cg = game:GetService("CoreGui")
+    local o = cg:FindFirstChild("GlobalChatHub"); if o then o:Destroy() end
+    local o2 = ME:FindFirstChild("PlayerGui") and ME.PlayerGui:FindFirstChild("GlobalChatHub")
+    if o2 then o2:Destroy() end
 end)
 
-local SG=Instance.new("ScreenGui")
-SG.Name="GlobalChatHub"; SG.ResetOnSpawn=false; SG.IgnoreGuiInset=true
-SG.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; SG.DisplayOrder=999
+-- ── ScreenGui ─────────────────────────────────────────────
+local SG = Instance.new("ScreenGui")
+SG.Name = "GlobalChatHub"; SG.ResetOnSpawn = false
+SG.IgnoreGuiInset = true; SG.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+SG.DisplayOrder = 999
 pcall(function() if syn and syn.protect_gui then syn.protect_gui(SG) end end)
-if not pcall(function() SG.Parent=game:GetService("CoreGui") end) then
-    SG.Parent=ME:WaitForChild("PlayerGui")
+if not pcall(function() SG.Parent = game:GetService("CoreGui") end) then
+    SG.Parent = ME:WaitForChild("PlayerGui")
 end
 
-local mob=UIS.TouchEnabled and not UIS.KeyboardEnabled
+-- ── Detect mobile ─────────────────────────────────────────
+local mob = UIS.TouchEnabled and not UIS.KeyboardEnabled
 
--- Fixed pixel sizes that work on all screens
-local WIN_W  = mob and math.floor(workspace.CurrentCamera.ViewportSize.X*0.96) or 550
-local WIN_H  = mob and math.floor(workspace.CurrentCamera.ViewportSize.Y*0.87) or 490
-local TH     = mob and 62 or 52
-local TABH   = mob and 44 or 36
-local INH    = mob and 50 or 38
-local FSZ    = mob and 14 or 12
-local BFSZ   = mob and 11 or 10
-local BTN_W  = mob and 85 or 76
-local BTN_H  = mob and 30 or 26
-local AV     = mob and 30 or 26   -- message avatar size
-local HDR    = TH + TABH + 1     -- header height
+-- ── Dimensions ────────────────────────────────────────────
+local vp = workspace.CurrentCamera.ViewportSize
+local WIN_W   = mob and math.min(math.floor(vp.X * 0.90), 400) or 520
+local WIN_H   = mob and math.min(math.floor(vp.Y * 0.72), 480) or 470
+local TITLE_H = mob and 52  or 44
+local TAB_W   = mob and 56  or 50
+local IN_H    = mob and 44  or 34
+local FSZ     = mob and 13  or 12
+local AV_SZ   = mob and 26  or 22
+local BTN_SZ  = mob and 28  or 23
 
--- ── HELPERS ───────────────────────────────────────────────
-local function mkCorner(p,r) local c=Instance.new("UICorner",p); c.CornerRadius=UDim.new(0,r or 10); return c end
-local function mkStroke(p,col,t) local s=Instance.new("UIStroke",p); s.Color=col; s.Thickness=t or 1; return s end
-local function mkGrad(p,c0,c1,rot)
-    local g=Instance.new("UIGradient",p)
-    g.Color=ColorSequence.new({ColorSequenceKeypoint.new(0,c0),ColorSequenceKeypoint.new(1,c1)})
-    if rot then g.Rotation=rot end
-    return g
-end
+-- ── Colors ────────────────────────────────────────────────
+local C_BG       = Color3.fromRGB(8,  6,  20)
+local C_TITLE    = Color3.fromRGB(12, 8,  30)
+local C_TABS_BG  = Color3.fromRGB(10, 7,  24)
+local C_TAB_ON   = Color3.fromRGB(85, 50, 205)
+local C_TAB_OFF  = Color3.fromRGB(17, 13, 36)
+local C_SEND     = Color3.fromRGB(82, 50, 195)
+local C_ACCENT   = Color3.fromRGB(72, 42, 180)
+local C_INPUT    = Color3.fromRGB(13, 10, 32)
 
 -- ══════════════════════════════════════════════════════════
--- MAIN WINDOW
+-- BUBBLE (estado minimizado)
 -- ══════════════════════════════════════════════════════════
-local Main=Instance.new("Frame",SG)
-Main.Name="Main"; Main.AnchorPoint=Vector2.new(0.5,0.5)
-Main.Position=UDim2.new(0.5,0,0.5,0)
-Main.Size=UDim2.new(0,WIN_W,0,WIN_H)
-Main.BackgroundColor3=Color3.fromRGB(8,6,20); Main.BorderSizePixel=0
-Main.ClipsDescendants=true
-mkCorner(Main,14)
-mkStroke(Main,Color3.fromRGB(75,44,188),1.5)
-mkGrad(Main,Color3.fromRGB(14,11,32),Color3.fromRGB(7,5,17))
+local Bubble = Instance.new("ImageButton", SG)
+Bubble.Name = "MiniBubble"
+Bubble.Size = UDim2.new(0, 54, 0, 54)
+Bubble.Position = UDim2.new(0, 14, 0.5, -27)
+Bubble.BackgroundColor3 = C_ACCENT
+Bubble.BorderSizePixel = 0
+Bubble.Visible = false
+Bubble.ZIndex = 100
+Bubble.AutoButtonColor = false
+Instance.new("UICorner", Bubble).CornerRadius = UDim.new(1, 0)
+local bSt = Instance.new("UIStroke", Bubble)
+bSt.Color = Color3.fromRGB(145, 105, 255); bSt.Thickness = 2
 
--- ── TITLE BAR ─────────────────────────────────────────────
-local TBar=Instance.new("Frame",Main)
-TBar.Size=UDim2.new(1,0,0,TH); TBar.Position=UDim2.new(0,0,0,0)
-TBar.BackgroundColor3=Color3.fromRGB(12,8,30); TBar.BorderSizePixel=0
-mkCorner(TBar,14)
--- fix bottom radius
-local tfix=Instance.new("Frame",TBar); tfix.Size=UDim2.new(1,0,0.5,0); tfix.Position=UDim2.new(0,0,0.5,0)
-tfix.BackgroundColor3=Color3.fromRGB(12,8,30); tfix.BorderSizePixel=0
-mkGrad(TBar,Color3.fromRGB(68,40,178),Color3.fromRGB(12,8,30))
+local bIco = Instance.new("TextLabel", Bubble)
+bIco.Size = UDim2.new(1,0,1,0); bIco.BackgroundTransparency = 1
+bIco.Text = "💬"; bIco.TextSize = 24; bIco.Font = Enum.Font.GothamBold
+bIco.TextColor3 = Color3.new(1,1,1)
 
--- Avatar in title
-local avSz=TH-16
-local avOuter=Instance.new("Frame",TBar)
-avOuter.Size=UDim2.new(0,avSz,0,avSz); avOuter.Position=UDim2.new(0,9,0.5,-(avSz/2))
-avOuter.BackgroundColor3=Color3.fromRGB(40,26,85); avOuter.BorderSizePixel=0
-mkCorner(avOuter,avSz); mkStroke(avOuter,Color3.fromRGB(112,72,212),2)
-local avImg=Instance.new("ImageLabel",avOuter)
-avImg.Size=UDim2.new(1,0,1,0); avImg.BackgroundTransparency=1; avImg.ScaleType=Enum.ScaleType.Fit
-mkCorner(avImg,avSz)
-fetchAv(MYUID,avImg)
+-- Badge de mensagens não lidas na bolinha
+local bBadge = Instance.new("TextLabel", Bubble)
+bBadge.Size = UDim2.new(0,18,0,18); bBadge.Position = UDim2.new(1,-14,0,-4)
+bBadge.BackgroundColor3 = Color3.fromRGB(220,45,45); bBadge.TextColor3 = Color3.new(1,1,1)
+bBadge.TextSize = 9; bBadge.Font = Enum.Font.GothamBold; bBadge.Text = ""
+bBadge.BorderSizePixel = 0; bBadge.Visible = false
+Instance.new("UICorner", bBadge).CornerRadius = UDim.new(1,0)
 
-local ax=avSz+20
-local nLbl=Instance.new("TextLabel",TBar)
-nLbl.Text=MYNAME; nLbl.Position=UDim2.new(0,ax,0,8); nLbl.Size=UDim2.new(1,-(ax+90),0,20)
-nLbl.BackgroundTransparency=1; nLbl.TextColor3=Color3.fromRGB(230,220,255)
-nLbl.TextSize=mob and 16 or 14; nLbl.Font=Enum.Font.GothamBold; nLbl.TextXAlignment=Enum.TextXAlignment.Left
-
-local ageLbl=Instance.new("TextLabel",TBar)
-ageLbl.Text="🎮 "..MYGAME; ageLbl.Position=UDim2.new(0,ax,0,TH/2+2); ageLbl.Size=UDim2.new(1,-(ax+90),0,16)
-ageLbl.BackgroundTransparency=1; ageLbl.TextColor3=Color3.fromRGB(100,85,165)
-ageLbl.TextSize=mob and 11 or 10; ageLbl.Font=Enum.Font.Gotham; ageLbl.TextXAlignment=Enum.TextXAlignment.Left
-
--- Globe icon
-local gico=Instance.new("TextLabel",TBar); gico.Text="🌐"; gico.Size=UDim2.new(0,22,0,22)
-gico.Position=UDim2.new(1,-(BTN_H*2+42),0.5,-11); gico.BackgroundTransparency=1; gico.TextSize=14; gico.Font=Enum.Font.GothamBold
+-- Pulso da bolinha
 task.spawn(function()
-    while Main.Parent do
-        Tween:Create(gico,TweenInfo.new(1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{TextTransparency=0.7}):Play(); task.wait(1)
-        Tween:Create(gico,TweenInfo.new(1,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),{TextTransparency=0}):Play(); task.wait(1)
+    while SG.Parent do
+        if Bubble.Visible then
+            Tween:Create(Bubble, TweenInfo.new(0.9,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),
+                {BackgroundColor3=Color3.fromRGB(108,65,240)}):Play()
+            task.wait(0.9)
+            Tween:Create(Bubble, TweenInfo.new(0.9,Enum.EasingStyle.Sine,Enum.EasingDirection.InOut),
+                {BackgroundColor3=Color3.fromRGB(58,32,145)}):Play()
+        end
+        task.wait(0.9)
     end
 end)
 
--- Min/Close buttons
-local function mkTBtn(txt,bg,xOff)
-    local b=Instance.new("TextButton",TBar)
-    b.Text=txt; b.Size=UDim2.new(0,BTN_H,0,BTN_H); b.Position=UDim2.new(1,xOff,0.5,-BTN_H/2)
-    b.BackgroundColor3=bg; b.TextColor3=Color3.fromRGB(255,255,255)
-    b.TextSize=mob and 18 or 14; b.Font=Enum.Font.GothamBold; b.BorderSizePixel=0; mkCorner(b,7); return b
+-- Drag da bolinha
+do
+    local bd, bs, bp, bmoved = false, nil, nil, false
+    Bubble.InputBegan:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            bd=true; bs=i.Position; bp=Bubble.Position; bmoved=false
+        end
+    end)
+    Bubble.InputEnded:Connect(function(i)
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            bd=false
+        end
+    end)
+    UIS.InputChanged:Connect(function(i)
+        if bd and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
+            local d = i.Position - bs
+            if (math.abs(d.X)+math.abs(d.Y)) > 8 then bmoved = true end
+            Bubble.Position = UDim2.new(bp.X.Scale, bp.X.Offset+d.X, bp.Y.Scale, bp.Y.Offset+d.Y)
+        end
+    end)
+    Bubble.MouseButton1Click:Connect(function()
+        if bmoved then return end -- era drag, não clique
+        -- expandir
+        Bubble.Visible = false
+        Main.Visible = true -- Main definido abaixo, ok pois closure
+        Main.Size = UDim2.new(0,0,0,0)
+        Tween:Create(Main, TweenInfo.new(0.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
+            {Size=UDim2.new(0,WIN_W,0,WIN_H)}):Play()
+        bBadge.Text = ""; bBadge.Visible = false
+    end)
 end
-local MinBtn   = mkTBtn("−",Color3.fromRGB(220,160,0),  -(BTN_H*2+12))
-local CloseBtn = mkTBtn("✕",Color3.fromRGB(210,42,42),  -(BTN_H+6))
-
--- ── TAB BAR ───────────────────────────────────────────────
-local TabBg=Instance.new("Frame",Main)
-TabBg.Size=UDim2.new(1,0,0,TABH); TabBg.Position=UDim2.new(0,0,0,TH)
-TabBg.BackgroundColor3=Color3.fromRGB(10,7,22); TabBg.BorderSizePixel=0
-
-local TabSF=Instance.new("ScrollingFrame",TabBg)
-TabSF.Size=UDim2.new(1,0,1,0); TabSF.BackgroundTransparency=1
-TabSF.ScrollBarThickness=0; TabSF.AutomaticCanvasSize=Enum.AutomaticSize.X
-TabSF.ScrollingDirection=Enum.ScrollingDirection.X
-local tbl=Instance.new("UIListLayout",TabSF)
-tbl.FillDirection=Enum.FillDirection.Horizontal; tbl.VerticalAlignment=Enum.VerticalAlignment.Center; tbl.Padding=UDim.new(0,5)
-local tbp=Instance.new("UIPadding",TabSF); tbp.PaddingLeft=UDim.new(0,8); tbp.PaddingTop=UDim.new(0,5); tbp.PaddingBottom=UDim.new(0,5)
-
-local divLine=Instance.new("Frame",Main)
-divLine.Size=UDim2.new(1,0,0,1); divLine.Position=UDim2.new(0,0,0,TH+TABH)
-divLine.BackgroundColor3=Color3.fromRGB(52,36,128); divLine.BorderSizePixel=0
-
--- ── CONTENT AREA (absolute pixel position & size) ─────────
-local ContentH = WIN_H - HDR
-local CFrame=Instance.new("Frame",Main)
-CFrame.Name="Content"; CFrame.Size=UDim2.new(0,WIN_W,0,ContentH)
-CFrame.Position=UDim2.new(0,0,0,HDR)
-CFrame.BackgroundTransparency=1; CFrame.ClipsDescendants=true
 
 -- ══════════════════════════════════════════════════════════
--- PANEL SYSTEM
+-- JANELA PRINCIPAL
 -- ══════════════════════════════════════════════════════════
-local TABS={
-    {key="local",   lbl="💬 Local",   fb=nil,      sys="Chat do servidor"},
-    {key="global",  lbl="🌍 Global",  fb="global", sys="Canal global"},
-    {key="brasil",  lbl="🇧🇷 Brasil",  fb="brasil", sys="Sala Brasil"},
-    {key="usa",     lbl="🇺🇸 USA",     fb="usa",    sys="Sala USA"},
-    {key="privado", lbl="🔒 Privado", fb=nil,      sys="Sala privada"},
-    {key="debug",   lbl="🔧 Debug",   fb=nil,      sys="Diagnóstico"},
+local Main = Instance.new("Frame", SG)
+Main.Name = "MainWin"; Main.AnchorPoint = Vector2.new(0.5,0.5)
+Main.Position = UDim2.new(0.5,0,0.5,0)
+Main.Size = UDim2.new(0,0,0,0)
+Main.BackgroundColor3 = C_BG; Main.BorderSizePixel = 0; Main.ClipsDescendants = true
+Instance.new("UICorner", Main).CornerRadius = UDim.new(0,14)
+local mSt = Instance.new("UIStroke", Main); mSt.Color = C_ACCENT; mSt.Thickness = 1.5
+
+-- Main começa invisível até o age gate ser confirmado
+Main.Visible = false
+
+-- ── BARRA DE TÍTULO ───────────────────────────────────────
+local TBar = Instance.new("Frame", Main)
+TBar.Size = UDim2.new(1,0,0,TITLE_H)
+TBar.BackgroundColor3 = C_TITLE; TBar.BorderSizePixel = 0
+Instance.new("UICorner", TBar).CornerRadius = UDim.new(0,14)
+local tfix = Instance.new("Frame", TBar)
+tfix.Size = UDim2.new(1,0,0.5,0); tfix.Position = UDim2.new(0,0,0.5,0)
+tfix.BackgroundColor3 = C_TITLE; tfix.BorderSizePixel = 0
+local tGrad = Instance.new("UIGradient", TBar)
+tGrad.Color = ColorSequence.new({
+    ColorSequenceKeypoint.new(0, Color3.fromRGB(68,40,175)),
+    ColorSequenceKeypoint.new(1, Color3.fromRGB(12,8,30))
+}); tGrad.Rotation = 90
+
+-- Avatar no título
+local avSzT = TITLE_H - 14
+local avOut = Instance.new("Frame", TBar)
+avOut.Size = UDim2.new(0,avSzT,0,avSzT); avOut.Position = UDim2.new(0,9,0.5,-avSzT/2)
+avOut.BackgroundColor3 = Color3.fromRGB(38,26,80); avOut.BorderSizePixel = 0
+Instance.new("UICorner", avOut).CornerRadius = UDim.new(1,0)
+Instance.new("UIStroke", avOut).Color = Color3.fromRGB(110,70,210)
+local avI = Instance.new("ImageLabel", avOut)
+avI.Size = UDim2.new(1,0,1,0); avI.BackgroundTransparency = 1; avI.ScaleType = Enum.ScaleType.Fit
+Instance.new("UICorner", avI).CornerRadius = UDim.new(1,0)
+fetchAvatar(MYUID, avI)
+
+local ax = avSzT + 16
+local nLbl = Instance.new("TextLabel", TBar)
+nLbl.Text = MYNAME; nLbl.Position = UDim2.new(0,ax,0,5)
+nLbl.Size = UDim2.new(1,-(ax+BTN_SZ*2+22),0,TITLE_H/2-3)
+nLbl.BackgroundTransparency = 1; nLbl.TextColor3 = Color3.fromRGB(228,218,255)
+nLbl.TextSize = mob and 14 or 13; nLbl.Font = Enum.Font.GothamBold
+nLbl.TextXAlignment = Enum.TextXAlignment.Left; nLbl.TextTruncate = Enum.TextTruncate.AtEnd
+
+local gLbl = Instance.new("TextLabel", TBar)
+gLbl.Text = "🎮 " .. game.Name; gLbl.Position = UDim2.new(0,ax,0,TITLE_H/2+2)
+gLbl.Size = UDim2.new(1,-(ax+BTN_SZ*2+22),0,TITLE_H/2-8)
+gLbl.BackgroundTransparency = 1; gLbl.TextColor3 = Color3.fromRGB(95,80,158)
+gLbl.TextSize = mob and 10 or 9; gLbl.Font = Enum.Font.Gotham
+gLbl.TextXAlignment = Enum.TextXAlignment.Left; gLbl.TextTruncate = Enum.TextTruncate.AtEnd
+
+-- Botões do título
+local function mkTBtn(txt, bg, x)
+    local b = Instance.new("TextButton", TBar)
+    b.Text=txt; b.Size=UDim2.new(0,BTN_SZ,0,BTN_SZ)
+    b.Position=UDim2.new(1,x,0.5,-BTN_SZ/2)
+    b.BackgroundColor3=bg; b.TextColor3=Color3.new(1,1,1)
+    b.TextSize=mob and 15 or 12; b.Font=Enum.Font.GothamBold; b.BorderSizePixel=0
+    b.AutoButtonColor=false
+    Instance.new("UICorner", b).CornerRadius = UDim.new(0,7)
+    b.MouseEnter:Connect(function() Tween:Create(b,TweenInfo.new(0.12),{BackgroundTransparency=0.25}):Play() end)
+    b.MouseLeave:Connect(function() Tween:Create(b,TweenInfo.new(0.12),{BackgroundTransparency=0}):Play() end)
+    return b
+end
+local MinBtn   = mkTBtn("−", Color3.fromRGB(200,145,0), -(BTN_SZ*2+13))
+local CloseBtn = mkTBtn("✕", Color3.fromRGB(195,38,38), -(BTN_SZ+7))
+
+-- ── CORPO (tabs esquerda + conteúdo direita) ──────────────
+local Body = Instance.new("Frame", Main)
+Body.Size = UDim2.new(1,0,1,-TITLE_H); Body.Position = UDim2.new(0,0,0,TITLE_H)
+Body.BackgroundTransparency = 1; Body.ClipsDescendants = true
+
+-- Painel lateral esquerdo (abas)
+local LeftPanel = Instance.new("ScrollingFrame", Body)
+LeftPanel.Size = UDim2.new(0,TAB_W,1,0)
+LeftPanel.BackgroundColor3 = C_TABS_BG; LeftPanel.BorderSizePixel = 0
+LeftPanel.ScrollBarThickness = 0; LeftPanel.AutomaticCanvasSize = Enum.AutomaticSize.Y
+LeftPanel.ScrollingDirection = Enum.ScrollingDirection.Y
+local ltl = Instance.new("UIListLayout", LeftPanel)
+ltl.FillDirection = Enum.FillDirection.Vertical
+ltl.HorizontalAlignment = Enum.HorizontalAlignment.Center
+ltl.Padding = UDim.new(0,5)
+local ltp = Instance.new("UIPadding", LeftPanel)
+ltp.PaddingTop = UDim.new(0,8); ltp.PaddingBottom = UDim.new(0,8)
+
+-- Divisor vertical
+local vDiv = Instance.new("Frame", Body)
+vDiv.Size = UDim2.new(0,1,1,0); vDiv.Position = UDim2.new(0,TAB_W,0,0)
+vDiv.BackgroundColor3 = Color3.fromRGB(50,34,122); vDiv.BorderSizePixel = 0
+
+-- Área de conteúdo
+local Content = Instance.new("Frame", Body)
+Content.Size = UDim2.new(1,-TAB_W-1,1,0); Content.Position = UDim2.new(0,TAB_W+1,0,0)
+Content.BackgroundTransparency = 1; Content.ClipsDescendants = true
+
+-- ══════════════════════════════════════════════════════════
+-- SISTEMA DE ABAS
+-- ══════════════════════════════════════════════════════════
+local TABS = {
+    {key="local",   ico="💬", lbl="Local",   fb=nil},
+    {key="global",  ico="🌍", lbl="Global",  fb="global"},
+    {key="brasil",  ico="🇧🇷", lbl="Brasil",  fb="brasil"},
+    {key="usa",     ico="🇺🇸", lbl="USA",     fb="usa"},
+    {key="privado", ico="🔒", lbl="Privado", fb=nil},
+    {key="debug",   ico="🔧", lbl="Debug",   fb=nil},
 }
-local tabBtns={}; local panels={}; local msgCount={}; local activeKey=nil
-local C_ON=Color3.fromRGB(88,50,212); local C_OFF=Color3.fromRGB(20,15,42)
+local tabBtns  = {}
+local panels   = {}
+local msgCount = {}
+local activeKey = nil
+local unreadCount = 0
 
-local function buildPanel(key,noInput)
-    msgCount[key]=0
-    local pW=WIN_W; local pHContent=ContentH
-    local iH=noInput and 0 or (INH+10)
+-- switchTab definida antes do loop
+local function switchTab(key)
+    if activeKey == key then return end
+    activeKey = key
+    for k, t in pairs(tabBtns) do
+        local on = (k == key)
+        Tween:Create(t.btn, TweenInfo.new(0.15), {BackgroundColor3 = on and C_TAB_ON or C_TAB_OFF}):Play()
+        t.ico.TextColor3 = on and Color3.fromRGB(255,248,255) or Color3.fromRGB(118,105,185)
+        t.lbl.TextColor3 = on and Color3.fromRGB(215,208,255) or Color3.fromRGB(80,68,135)
+        -- indicador lateral
+        t.ind.BackgroundTransparency = on and 0 or 1
+    end
+    for k, p in pairs(panels) do
+        if k == key then
+            p.frame.Visible = true
+            p.frame.Position = UDim2.new(0.04,0,0,0)
+            Tween:Create(p.frame, TweenInfo.new(0.18,Enum.EasingStyle.Quad),
+                {Position=UDim2.new(0,0,0,0)}):Play()
+        else
+            p.frame.Visible = false
+        end
+    end
+end
 
-    local fr=Instance.new("Frame",CFrame)
-    fr.Name=key; fr.Size=UDim2.new(0,pW,0,pHContent)
-    fr.Position=UDim2.new(0,0,0,0)
-    fr.BackgroundTransparency=1; fr.Visible=false; fr.ClipsDescendants=true
+-- Cria botão de aba (vertical, lado esquerdo)
+local function mkTabBtn(tab)
+    local btn = Instance.new("TextButton", LeftPanel)
+    btn.Name = tab.key
+    local BH = mob and 62 or 54
+    btn.Size = UDim2.new(1,-6,0,BH)
+    btn.BackgroundColor3 = C_TAB_OFF; btn.BorderSizePixel = 0
+    btn.Text = ""; btn.AutoButtonColor = false
+    Instance.new("UICorner", btn).CornerRadius = UDim.new(0,9)
 
-    local scH=pHContent-(iH+10)
-    local scroll=Instance.new("ScrollingFrame",fr)
-    scroll.Name="Scroll"; scroll.Size=UDim2.new(0,pW-12,0,scH)
-    scroll.Position=UDim2.new(0,6,0,4)
-    scroll.BackgroundColor3=Color3.fromRGB(9,7,20); scroll.BorderSizePixel=0
-    scroll.ScrollBarThickness=3; scroll.ScrollBarImageColor3=Color3.fromRGB(80,48,200)
-    scroll.CanvasSize=UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize=Enum.AutomaticSize.Y
-    mkCorner(scroll,10)
-    local ll=Instance.new("UIListLayout",scroll); ll.SortOrder=Enum.SortOrder.LayoutOrder; ll.Padding=UDim.new(0,2)
-    local sp=Instance.new("UIPadding",scroll)
-    sp.PaddingLeft=UDim.new(0,6); sp.PaddingRight=UDim.new(0,6); sp.PaddingTop=UDim.new(0,5); sp.PaddingBottom=UDim.new(0,5)
+    -- Indicador ativo (barra esquerda)
+    local ind = Instance.new("Frame", btn)
+    ind.Size = UDim2.new(0,3,0.6,0); ind.Position = UDim2.new(0,0,0.2,0)
+    ind.BackgroundColor3 = Color3.fromRGB(165,120,255); ind.BorderSizePixel = 0
+    ind.BackgroundTransparency = 1
+    Instance.new("UICorner", ind).CornerRadius = UDim.new(0,2)
 
-    local inputBox,sendBtn
+    local ico = Instance.new("TextLabel", btn)
+    ico.Size = UDim2.new(1,0,0, mob and 28 or 22)
+    ico.Position = UDim2.new(0,0,0, mob and 6 or 4)
+    ico.BackgroundTransparency = 1; ico.TextSize = mob and 18 or 15
+    ico.Font = Enum.Font.GothamBold; ico.Text = tab.ico
+    ico.TextColor3 = Color3.fromRGB(118,105,185)
+
+    local lbl = Instance.new("TextLabel", btn)
+    lbl.Size = UDim2.new(1,0,0, mob and 14 or 12)
+    lbl.Position = UDim2.new(0,0,1, mob and -20 or -16)
+    lbl.BackgroundTransparency = 1; lbl.TextSize = mob and 8 or 7
+    lbl.Font = Enum.Font.Gotham; lbl.Text = tab.lbl
+    lbl.TextColor3 = Color3.fromRGB(80,68,135)
+
+    tabBtns[tab.key] = {btn=btn, ico=ico, lbl=lbl, ind=ind}
+    btn.MouseButton1Click:Connect(function() switchTab(tab.key) end)
+    return btn
+end
+
+-- Cria painel de conteúdo
+local function buildPanel(key, noInput)
+    msgCount[key] = 0
+    local frame = Instance.new("Frame", Content)
+    frame.Name = key; frame.Size = UDim2.new(1,0,1,0)
+    frame.BackgroundTransparency = 1; frame.Visible = false; frame.ClipsDescendants = true
+
+    local iH = noInput and 0 or (IN_H + 10)
+    local scroll = Instance.new("ScrollingFrame", frame)
+    scroll.Name = "Scroll"
+    scroll.Size = UDim2.new(1,-8,1,-(iH+6))
+    scroll.Position = UDim2.new(0,4,0,3)
+    scroll.BackgroundColor3 = Color3.fromRGB(9,7,20); scroll.BorderSizePixel = 0
+    scroll.ScrollBarThickness = 3; scroll.ScrollBarImageColor3 = C_ACCENT
+    scroll.CanvasSize = UDim2.new(0,0,0,0); scroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Instance.new("UICorner", scroll).CornerRadius = UDim.new(0,8)
+    local ll = Instance.new("UIListLayout", scroll)
+    ll.SortOrder = Enum.SortOrder.LayoutOrder; ll.Padding = UDim.new(0,2)
+    local sp = Instance.new("UIPadding", scroll)
+    sp.PaddingLeft=UDim.new(0,5); sp.PaddingRight=UDim.new(0,5)
+    sp.PaddingTop=UDim.new(0,4); sp.PaddingBottom=UDim.new(0,4)
+
+    local inputBox, sendBtn
     if not noInput then
-        local iF=Instance.new("Frame",fr)
-        iF.Size=UDim2.new(0,pW-12,0,INH); iF.Position=UDim2.new(0,6,0,scH+6)
-        iF.BackgroundColor3=Color3.fromRGB(13,10,32); iF.BorderSizePixel=0; mkCorner(iF,10); mkStroke(iF,Color3.fromRGB(58,38,148))
+        local iF = Instance.new("Frame", frame)
+        iF.Size = UDim2.new(1,-8,0,IN_H); iF.Position = UDim2.new(0,4,1,-(IN_H+5))
+        iF.BackgroundColor3 = C_INPUT; iF.BorderSizePixel = 0
+        Instance.new("UICorner", iF).CornerRadius = UDim.new(0,10)
+        local iSt = Instance.new("UIStroke", iF); iSt.Color = Color3.fromRGB(58,38,148); iSt.Thickness = 1
 
-        inputBox=Instance.new("TextBox",iF)
-        inputBox.PlaceholderText="Escreva aqui..."; inputBox.Text=""
-        inputBox.Size=UDim2.new(1,-90,1,0); inputBox.Position=UDim2.new(0,10,0,0)
-        inputBox.BackgroundTransparency=1; inputBox.TextColor3=Color3.fromRGB(215,205,255)
-        inputBox.PlaceholderColor3=Color3.fromRGB(65,55,115); inputBox.TextSize=FSZ
-        inputBox.Font=Enum.Font.Gotham; inputBox.TextXAlignment=Enum.TextXAlignment.Left
-        inputBox.ClearTextOnFocus=false; inputBox.MultiLine=false
+        inputBox = Instance.new("TextBox", iF)
+        inputBox.PlaceholderText = "Escreva aqui..."
+        inputBox.Size = UDim2.new(1,-(IN_H+12),1,0); inputBox.Position = UDim2.new(0,10,0,0)
+        inputBox.BackgroundTransparency = 1; inputBox.TextColor3 = Color3.fromRGB(215,205,255)
+        inputBox.PlaceholderColor3 = Color3.fromRGB(62,52,112); inputBox.TextSize = FSZ
+        inputBox.Font = Enum.Font.Gotham; inputBox.TextXAlignment = Enum.TextXAlignment.Left
+        inputBox.ClearTextOnFocus = false; inputBox.MultiLine = false
 
-        sendBtn=Instance.new("TextButton",iF)
-        sendBtn.Text="Enviar"; sendBtn.Size=UDim2.new(0,72,0,INH-12)
-        sendBtn.Position=UDim2.new(1,-78,0.5,-(INH-12)/2)
-        sendBtn.BackgroundColor3=Color3.fromRGB(85,50,200); sendBtn.TextColor3=Color3.fromRGB(255,255,255)
-        sendBtn.TextSize=mob and 12 or 11; sendBtn.Font=Enum.Font.GothamBold; sendBtn.BorderSizePixel=0; mkCorner(sendBtn,8)
-        sendBtn.MouseEnter:Connect(function() Tween:Create(sendBtn,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(108,70,228)}):Play() end)
-        sendBtn.MouseLeave:Connect(function() Tween:Create(sendBtn,TweenInfo.new(0.15),{BackgroundColor3=Color3.fromRGB(85,50,200)}):Play() end)
+        sendBtn = Instance.new("TextButton", iF)
+        sendBtn.Text = "➤"; sendBtn.Size = UDim2.new(0,IN_H-4,0,IN_H-8)
+        sendBtn.Position = UDim2.new(1,-(IN_H+2),0.5,-(IN_H-8)/2)
+        sendBtn.BackgroundColor3 = C_SEND; sendBtn.TextColor3 = Color3.new(1,1,1)
+        sendBtn.TextSize = mob and 18 or 16; sendBtn.Font = Enum.Font.GothamBold
+        sendBtn.BorderSizePixel = 0; sendBtn.AutoButtonColor = false
+        Instance.new("UICorner", sendBtn).CornerRadius = UDim.new(0,8)
+        sendBtn.MouseEnter:Connect(function()
+            Tween:Create(sendBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(105,70,225)}):Play() end)
+        sendBtn.MouseLeave:Connect(function()
+            Tween:Create(sendBtn,TweenInfo.new(0.12),{BackgroundColor3=C_SEND}):Play() end)
     end
 
-    panels[key]={fr=fr,scroll=scroll,input=inputBox,send=sendBtn}
+    panels[key] = {frame=frame, scroll=scroll, input=inputBox, send=sendBtn}
     return panels[key]
 end
 
--- ── Add message ───────────────────────────────────────────
-local function addMsg(key,user,text,uid,senderAge,isSys)
-    local p=panels[key]; if not p or not p.scroll then return end
-    msgCount[key]=(msgCount[key] or 0)+1
-    if msgCount[key]>MAX_MSGS then
-        local old=p.scroll:FindFirstChildWhichIsA("Frame"); if old then old:Destroy(); msgCount[key]=msgCount[key]-1 end
+-- Adiciona mensagem ao painel
+local function addMsg(key, user, text, uid, isSys)
+    local p = panels[key]; if not p or not p.scroll then return end
+    msgCount[key] = (msgCount[key] or 0) + 1
+    if msgCount[key] > MAX_MSGS then
+        local f = p.scroll:FindFirstChildWhichIsA("Frame")
+        if f then f:Destroy(); msgCount[key] = msgCount[key] - 1 end
     end
-    local row=Instance.new("Frame",p.scroll)
-    row.Name="msg"; row.LayoutOrder=msgCount[key]; row.BorderSizePixel=0
+
+    -- Badge na bolinha se minimizado
+    if Bubble.Visible and not isSys and user ~= MYNAME then
+        unreadCount = unreadCount + 1
+        bBadge.Text = unreadCount > 9 and "9+" or tostring(unreadCount)
+        bBadge.Visible = true
+    end
+
+    local row = Instance.new("Frame", p.scroll)
+    row.Name = "msg"; row.LayoutOrder = msgCount[key]
+    row.BackgroundTransparency = 1; row.BorderSizePixel = 0
 
     if isSys then
-        row.Size=UDim2.new(1,0,0,0); row.AutomaticSize=Enum.AutomaticSize.Y; row.BackgroundTransparency=1
-        local lbl=Instance.new("TextLabel",row)
-        lbl.Size=UDim2.new(1,-6,0,0); lbl.AutomaticSize=Enum.AutomaticSize.Y; lbl.Position=UDim2.new(0,3,0,2)
-        lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(118,108,182)
-        lbl.TextSize=FSZ-1; lbl.Font=Enum.Font.GothamItalic; lbl.TextWrapped=true
-        lbl.TextXAlignment=Enum.TextXAlignment.Center; lbl.Text=tostring(text)
+        row.Size = UDim2.new(1,0,0,20); row.AutomaticSize = Enum.AutomaticSize.Y
+        local lb = Instance.new("TextLabel", row)
+        lb.Size = UDim2.new(1,-4,0,0); lb.AutomaticSize = Enum.AutomaticSize.Y
+        lb.Position = UDim2.new(0,2,0,2); lb.BackgroundTransparency = 1
+        lb.TextColor3 = Color3.fromRGB(112,102,175); lb.TextSize = FSZ-1
+        lb.Font = Enum.Font.GothamItalic; lb.TextWrapped = true
+        lb.TextXAlignment = Enum.TextXAlignment.Center; lb.RichText = true
+        lb.Text = tostring(text)
     else
-        -- check age warning
-        local showAgeWarn = false
-        local myIsMinor   = isMinor(MY_AGE)
-        local myIsAdult   = isAdult(MY_AGE)
-        local sndrMinor   = isMinor(senderAge or 0)
-        local sndrAdult   = isAdult(senderAge or 0)
-        if user~=MYNAME and MY_AGE>0 and (senderAge or 0)>0 then
-            if myIsMinor and sndrAdult then showAgeWarn=true end
-            if myIsAdult and sndrMinor then showAgeWarn=true end
-        end
+        row.Size = UDim2.new(1,0,0,AV_SZ+14); row.AutomaticSize = Enum.AutomaticSize.Y
+        row.BackgroundColor3 = Color3.fromRGB(22,16,48); row.BackgroundTransparency = 0.58
+        Instance.new("UICorner", row).CornerRadius = UDim.new(0,7)
+        Tween:Create(row,TweenInfo.new(0.2),{BackgroundTransparency=0.72}):Play()
 
-        row.Size=UDim2.new(1,0,0,0); row.AutomaticSize=Enum.AutomaticSize.Y
-        row.BackgroundColor3=Color3.fromRGB(24,18,50); row.BackgroundTransparency=0.6
-        mkCorner(row,8)
+        local avF = Instance.new("Frame", row)
+        avF.Size = UDim2.new(0,AV_SZ,0,AV_SZ); avF.Position = UDim2.new(0,5,0,6)
+        avF.BackgroundColor3 = Color3.fromRGB(36,24,72); avF.BorderSizePixel = 0
+        Instance.new("UICorner", avF).CornerRadius = UDim.new(1,0)
+        local avImg2 = Instance.new("ImageLabel", avF)
+        avImg2.Size = UDim2.new(1,0,1,0); avImg2.BackgroundTransparency = 1
+        avImg2.ScaleType = Enum.ScaleType.Fit
+        Instance.new("UICorner", avImg2).CornerRadius = UDim.new(1,0)
+        if uid and uid ~= 0 then fetchAvatar(uid, avImg2) end
 
-        -- age warning banner
-        if showAgeWarn then
-            local wb=Instance.new("Frame",row)
-            wb.Size=UDim2.new(1,-10,0,0); wb.AutomaticSize=Enum.AutomaticSize.Y; wb.Position=UDim2.new(0,5,0,4)
-            wb.BackgroundColor3=Color3.fromRGB(180,80,20); wb.BackgroundTransparency=0.3; wb.BorderSizePixel=0; mkCorner(wb,6)
-            local wt=Instance.new("TextLabel",wb)
-            wt.Size=UDim2.new(1,-8,0,0); wt.AutomaticSize=Enum.AutomaticSize.Y; wt.Position=UDim2.new(0,4,0,3)
-            wt.BackgroundTransparency=1; wt.TextColor3=Color3.fromRGB(255,220,100)
-            wt.TextSize=FSZ-1; wt.Font=Enum.Font.GothamBold; wt.TextWrapped=true; wt.TextXAlignment=Enum.TextXAlignment.Left
-            if myIsMinor then
-                wt.Text="⚠️ Este usuário é adulto ("..tostring(senderAge).." anos). Tome cuidado!"
-            else
-                wt.Text="⚠️ Este usuário é menor de idade ("..tostring(senderAge).." anos)."
-            end
-            local spacer=Instance.new("Frame",wb); spacer.Size=UDim2.new(1,0,0,4); spacer.Position=UDim2.new(0,0,1,0); spacer.BackgroundTransparency=1
-        end
+        local lx = AV_SZ + 11
+        local txF = Instance.new("Frame", row)
+        txF.Size = UDim2.new(1,-(lx+5),0,0); txF.AutomaticSize = Enum.AutomaticSize.Y
+        txF.Position = UDim2.new(0,lx,0,5); txF.BackgroundTransparency = 1
 
-        -- message body
-        local body=Instance.new("Frame",row)
-        local yOff=showAgeWarn and (20+(FSZ*2)) or 0
-        body.Size=UDim2.new(1,0,0,0); body.AutomaticSize=Enum.AutomaticSize.Y
-        body.Position=UDim2.new(0,0,0,yOff); body.BackgroundTransparency=1
+        local nc = (user==MYNAME) and "#FFD700" or "#AE9DFF"
+        local nL = Instance.new("TextLabel", txF)
+        nL.Size = UDim2.new(1,0,0,14); nL.BackgroundTransparency = 1
+        nL.TextSize = FSZ-1; nL.Font = Enum.Font.GothamBold
+        nL.TextXAlignment = Enum.TextXAlignment.Left; nL.RichText = true
+        nL.Text = ('<font color="%s">%s</font>'):format(nc, tostring(user))
 
-        local avF=Instance.new("Frame",body); avF.Size=UDim2.new(0,AV,0,AV); avF.Position=UDim2.new(0,6,0,6)
-        avF.BackgroundColor3=Color3.fromRGB(36,24,72); avF.BorderSizePixel=0; mkCorner(avF,AV)
-        local avI=Instance.new("ImageLabel",avF); avI.Size=UDim2.new(1,0,1,0); avI.BackgroundTransparency=1; avI.ScaleType=Enum.ScaleType.Fit; mkCorner(avI,AV)
-        if uid and uid~=0 then fetchAv(uid,avI) end
+        local mL = Instance.new("TextLabel", txF)
+        mL.Size = UDim2.new(1,0,0,0); mL.AutomaticSize = Enum.AutomaticSize.Y
+        mL.Position = UDim2.new(0,0,0,15); mL.BackgroundTransparency = 1
+        mL.TextColor3 = Color3.fromRGB(202,192,242); mL.TextSize = FSZ
+        mL.Font = Enum.Font.Gotham; mL.TextWrapped = true
+        mL.TextXAlignment = Enum.TextXAlignment.Left; mL.Text = tostring(text)
 
-        local lx=AV+15
-        local txF=Instance.new("Frame",body); txF.Size=UDim2.new(1,-lx-8,0,0); txF.AutomaticSize=Enum.AutomaticSize.Y
-        txF.Position=UDim2.new(0,lx,0,5); txF.BackgroundTransparency=1
-
-        local nc=(user==MYNAME) and "#FFD700" or "#B09FFF"
-        local ageStr=(senderAge and senderAge>0) and (" <font color='#888'>("..(senderAge)..")</font>") or ""
-        local nl=Instance.new("TextLabel",txF); nl.Size=UDim2.new(1,0,0,14); nl.BackgroundTransparency=1
-        nl.TextColor3=Color3.fromRGB(188,178,238); nl.TextSize=FSZ-1; nl.Font=Enum.Font.GothamBold
-        nl.TextXAlignment=Enum.TextXAlignment.Left; nl.RichText=true
-        nl.Text=('<font color="%s">%s</font>%s'):format(nc,tostring(user),ageStr)
-
-        local ml=Instance.new("TextLabel",txF); ml.Size=UDim2.new(1,0,0,0); ml.AutomaticSize=Enum.AutomaticSize.Y
-        ml.Position=UDim2.new(0,0,0,15); ml.BackgroundTransparency=1
-        ml.TextColor3=Color3.fromRGB(205,195,245); ml.TextSize=FSZ; ml.Font=Enum.Font.Gotham
-        ml.TextWrapped=true; ml.TextXAlignment=Enum.TextXAlignment.Left; ml.Text=tostring(text)
-
-        -- Report button (show if warning, or always on hover for safety)
-        if showAgeWarn or (user~=MYNAME) then
-            local rBtn=Instance.new("TextButton",txF)
-            rBtn.Text="🚨 Reportar"; rBtn.Size=UDim2.new(0,80,0,18)
-            rBtn.Position=UDim2.new(0,0,1,4)
-            rBtn.BackgroundColor3=Color3.fromRGB(160,30,30); rBtn.TextColor3=Color3.fromRGB(255,210,210)
-            rBtn.TextSize=FSZ-2; rBtn.Font=Enum.Font.GothamBold; rBtn.BorderSizePixel=0; mkCorner(rBtn,5)
-            if not showAgeWarn then rBtn.BackgroundTransparency=0.7; rBtn.TextTransparency=0.5 end
-            rBtn.MouseButton1Click:Connect(function()
-                if reportedUsers[user] then rBtn.Text="✔ Reportado"; return end
-                reportedUsers[user]=true; rBtn.Text="✔ Reportado"
-                rBtn.BackgroundColor3=Color3.fromRGB(40,120,40)
-                task.spawn(function()
-                    fbPost("/reports.json",{reporter=MYNAME,reported=user,ts=os.time(),g=MYGAME,uid=uid or 0})
-                end)
-            end)
-            -- spacer for report button
-            local rsp=Instance.new("Frame",txF); rsp.Size=UDim2.new(1,0,0,26); rsp.Position=UDim2.new(0,0,1,0); rsp.BackgroundTransparency=1
-        end
-
-        -- bottom pad
-        local bp=Instance.new("Frame",body); bp.Size=UDim2.new(1,0,0,8); bp.Position=UDim2.new(0,0,1,0); bp.BackgroundTransparency=1
+        -- Espaço em baixo
+        local pad = Instance.new("Frame", txF)
+        pad.Size = UDim2.new(1,0,0,7); pad.Position = UDim2.new(0,0,1,0); pad.BackgroundTransparency = 1
     end
-    task.defer(function() pcall(function() p.scroll.CanvasPosition=Vector2.new(0,99999) end) end)
+    task.defer(function() pcall(function() p.scroll.CanvasPosition = Vector2.new(0,99999) end) end)
 end
 
-local function sysMsg(key,txt) addMsg(key,"",txt,0,0,true) end
+local function sysMsg(key, txt) addMsg(key,"",txt,0,true) end
 
--- ── Build tabs ────────────────────────────────────────────
-for _,tab in ipairs(TABS) do
-    local noIn=(tab.key=="local" or tab.key=="debug" or tab.key=="privado")
-    buildPanel(tab.key,noIn)
-    local btn=Instance.new("TextButton",TabSF)
-    btn.Text=tab.lbl; btn.Size=UDim2.new(0,BTN_W,0,BTN_H)
-    btn.BackgroundColor3=C_OFF; btn.TextColor3=Color3.fromRGB(112,102,162)
-    btn.TextSize=BFSZ; btn.Font=Enum.Font.Gotham; btn.BorderSizePixel=0; mkCorner(btn,7)
-    tabBtns[tab.key]=btn
+-- ── Constrói abas e painéis ───────────────────────────────
+for _, tab in ipairs(TABS) do
+    mkTabBtn(tab)
+    local noIn = (tab.key=="local" or tab.key=="debug" or tab.key=="privado")
+    buildPanel(tab.key, noIn)
 end
-
--- ── Switch tab ────────────────────────────────────────────
-local function switchTab(key)
-    if activeKey==key then return end; activeKey=key
-    for k,btn in pairs(tabBtns) do
-        local on=(k==key)
-        Tween:Create(btn,TweenInfo.new(0.18),{BackgroundColor3=on and C_ON or C_OFF,TextColor3=on and Color3.fromRGB(238,232,255) or Color3.fromRGB(112,102,162)}):Play()
-    end
-    for k,p in pairs(panels) do p.fr.Visible=(k==key) end
-end
-for key,btn in pairs(tabBtns) do btn.MouseButton1Click:Connect(function() switchTab(key) end) end
 
 -- ══════════════════════════════════════════════════════════
--- AGE PROMPT MODAL
--- ══════════════════════════════════════════════════════════
-local ageConfirmed = false
-local ageDone = Instance.new("BindableEvent")
-
-local ageModal=Instance.new("Frame",SG)
-ageModal.Size=UDim2.new(0,WIN_W,0,WIN_H); ageModal.Position=Main.Position
-ageModal.AnchorPoint=Vector2.new(0.5,0.5)
-ageModal.BackgroundColor3=Color3.fromRGB(6,4,16); ageModal.BorderSizePixel=0; ageModal.ZIndex=50
-mkCorner(ageModal,14); mkStroke(ageModal,Color3.fromRGB(75,44,188),1.5)
-
-local amBox=Instance.new("Frame",ageModal)
-amBox.Size=UDim2.new(0,mob and WIN_W-40 or 340,0,mob and 260 or 230)
-amBox.AnchorPoint=Vector2.new(0.5,0.5); amBox.Position=UDim2.new(0.5,0,0.45,0)
-amBox.BackgroundColor3=Color3.fromRGB(14,10,34); amBox.BorderSizePixel=0; mkCorner(amBox,14); mkStroke(amBox,Color3.fromRGB(88,50,212))
-
-local amTitle=Instance.new("TextLabel",amBox)
-amTitle.Text="🔞 Qual é a sua idade?"; amTitle.Size=UDim2.new(1,-20,0,32)
-amTitle.Position=UDim2.new(0,10,0,12)
-amTitle.BackgroundTransparency=1; amTitle.TextColor3=Color3.fromRGB(220,210,255)
-amTitle.TextSize=mob and 18 or 16; amTitle.Font=Enum.Font.GothamBold; amTitle.TextXAlignment=Enum.TextXAlignment.Center
-
-local amNote=Instance.new("TextLabel",amBox)
-amNote.Text="ℹ️ Isso não afetará seu chat.\nVocê poderá conversar com quem quiser."
-amNote.Size=UDim2.new(1,-20,0,0); amNote.AutomaticSize=Enum.AutomaticSize.Y
-amNote.Position=UDim2.new(0,10,0,48)
-amNote.BackgroundTransparency=1; amNote.TextColor3=Color3.fromRGB(130,118,190)
-amNote.TextSize=mob and 13 or 11; amNote.Font=Enum.Font.GothamItalic
-amNote.TextWrapped=true; amNote.TextXAlignment=Enum.TextXAlignment.Center
-
-local amInput=Instance.new("TextBox",amBox)
-amInput.PlaceholderText="Sua idade (ex: 16)"; amInput.Text=""
-amInput.Size=UDim2.new(1,-20,0,INH); amInput.Position=UDim2.new(0,10,0,120)
-amInput.BackgroundColor3=Color3.fromRGB(20,16,42); amInput.BorderSizePixel=0; mkCorner(amInput,9); mkStroke(amInput,Color3.fromRGB(70,48,155))
-amInput.TextColor3=Color3.fromRGB(220,210,255); amInput.PlaceholderColor3=Color3.fromRGB(90,78,148)
-amInput.TextSize=mob and 18 or 16; amInput.Font=Enum.Font.GothamBold; amInput.TextXAlignment=Enum.TextXAlignment.Center
-amInput.ClearTextOnFocus=false
-
-local amBtn=Instance.new("TextButton",amBox)
-amBtn.Text="✅ Confirmar"; amBtn.Size=UDim2.new(1,-20,0,INH)
-amBtn.Position=UDim2.new(0,10,0,174)
-amBtn.BackgroundColor3=Color3.fromRGB(85,50,200); amBtn.TextColor3=Color3.fromRGB(255,255,255)
-amBtn.TextSize=mob and 15 or 13; amBtn.Font=Enum.Font.GothamBold; amBtn.BorderSizePixel=0; mkCorner(amBtn,10)
-
-local function confirmAge()
-    local v=tonumber(amInput.Text)
-    if not v or v<5 or v>100 then
-        amInput.PlaceholderText="⚠️ Número inválido!"
-        amInput.Text=""
-        Tween:Create(amBox,TweenInfo.new(0.06),{Position=UDim2.new(0.5,-5,0.45,0)}):Play()
-        task.wait(0.06)
-        Tween:Create(amBox,TweenInfo.new(0.06),{Position=UDim2.new(0.5,5,0.45,0)}):Play()
-        task.wait(0.06)
-        Tween:Create(amBox,TweenInfo.new(0.06),{Position=UDim2.new(0.5,0,0.45,0)}):Play()
-        return
-    end
-    MY_AGE = v
-    ageLbl.Text=(isMinor(v) and "👤 " or "🔞 ")..MYGAME.." | "..v.."anos"
-    Tween:Create(ageModal,TweenInfo.new(0.3),{BackgroundTransparency=1}):Play()
-    for _,c in ipairs(ageModal:GetDescendants()) do
-        if c:IsA("TextLabel") or c:IsA("TextButton") then
-            pcall(function() Tween:Create(c,TweenInfo.new(0.3),{TextTransparency=1}):Play() end)
-        end
-        if c:IsA("Frame") then pcall(function() Tween:Create(c,TweenInfo.new(0.3),{BackgroundTransparency=1}):Play() end) end
-    end
-    task.delay(0.35,function() ageModal:Destroy() end)
-    ageConfirmed=true
-    ageDone:Fire()
-end
-amBtn.MouseButton1Click:Connect(confirmAge)
-amInput.FocusLost:Connect(function(e) if e then confirmAge() end end)
-
--- ══════════════════════════════════════════════════════════
--- LOCAL CHAT
+-- CHAT LOCAL
 -- ══════════════════════════════════════════════════════════
 sysMsg("local","✅ Chat local conectado!")
-local function hookLocal()
-    local ok=pcall(function()
-        if game:GetService("TextChatService").ChatVersion~=Enum.ChatVersion.TextChatService then error() end
-        game:GetService("TextChatService").MessageReceived:Connect(function(msg)
-            local nm=(msg.TextSource and msg.TextSource.Name) or "?"
-            local uid2=0; pcall(function() local pp=Players:FindFirstChild(nm); if pp then uid2=pp.UserId end end)
-            addMsg("local",nm,msg.Text,uid2,0,false)
+local function hookLocalChat()
+    local ok = pcall(function()
+        local tcs = game:GetService("TextChatService")
+        if tcs.ChatVersion ~= Enum.ChatVersion.TextChatService then error() end
+        tcs.MessageReceived:Connect(function(msg)
+            local nm = (msg.TextSource and msg.TextSource.Name) or "?"
+            local uid2 = 0; pcall(function()
+                local pp = Players:FindFirstChild(nm); if pp then uid2 = pp.UserId end
+            end)
+            addMsg("local", nm, msg.Text, uid2)
         end)
     end)
     if ok then return end
-    local function hk(pl) pl.Chatted:Connect(function(m) addMsg("local",pl.Name,m,pl.UserId,0,false) end) end
-    for _,pl in ipairs(Players:GetPlayers()) do hk(pl) end
+    local function hk(p2) p2.Chatted:Connect(function(m) addMsg("local",p2.Name,m,p2.UserId) end) end
+    for _, p2 in ipairs(Players:GetPlayers()) do hk(p2) end
     Players.PlayerAdded:Connect(hk)
 end
-task.spawn(hookLocal)
+task.spawn(hookLocalChat)
 
 -- ══════════════════════════════════════════════════════════
--- GLOBAL CHANNELS
+-- CANAIS FIREBASE (global / brasil / usa)
 -- ══════════════════════════════════════════════════════════
-local function setupChannel(key,fb)
-    local p=panels[key]; if not p then return end
-    sysMsg(key,"🔗 Canal: "..fb.." | Conectando...")
+local function setupChannel(key, fb)
+    local p = panels[key]; if not p then return end
+    sysMsg(key, "🔗 Canal [" .. fb .. "] conectando...")
 
     local function enviar(txt)
-        txt=txt and txt:match("^%s*(.-)%s*$") or ""; if txt=="" then return end
+        txt = txt and txt:match("^%s*(.-)%s*$") or ""
+        if txt == "" then return end
         task.spawn(function()
-            fbPost("/"..fb..".json",{u=MYNAME,uid=MYUID,t=txt,ts=os.time(),g=MYGAME,age=MY_AGE})
+            fbPost("/"..fb..".json", {u=MYNAME, uid=MYUID, t=txt, ts=os.time(), g=game.Name})
         end)
-        if p.input then p.input.Text="" end
+        if p.input then p.input.Text = "" end
     end
-    if p.send then p.send.MouseButton1Click:Connect(function() enviar(p.input and p.input.Text or "") end) end
-    if p.input then p.input.FocusLost:Connect(function(e) if e then enviar(p.input.Text) end end) end
+
+    if p.send  then p.send.MouseButton1Click:Connect(function() enviar(p.input and p.input.Text or "") end) end
+    if p.input then p.input.FocusLost:Connect(function(enter) if enter then enviar(p.input.Text) end end) end
 
     task.spawn(function()
-        local known={}; local first=true
+        local known = {}; local first = true
         while Main.Parent do
-            task.wait(first and 0.7 or POLL_INT)
-            local data,err=fbList(fb)
+            task.wait(first and 0.5 or POLL_INT)
+            local data, err = fbList(fb)
             if data and type(data)=="table" then
-                local list={}
-                for k,v in pairs(data) do
+                local list = {}
+                for k, v in pairs(data) do
                     if type(v)=="table" and not known[k] then
-                        known[k]=true; table.insert(list,{ts=v.ts or 0,u=v.u or "?",t=v.t or "",uid=v.uid or 0,age=v.age or 0})
+                        known[k]=true
+                        table.insert(list, {ts=v.ts or 0, u=v.u or "?", t=v.t or "", uid=v.uid or 0})
                     end
                 end
-                table.sort(list,function(a,b) return a.ts<b.ts end)
-                if first then first=false; if #list==0 then sysMsg(key,"📭 Seja o primeiro a enviar!") end end
-                for _,m in ipairs(list) do
-                    if m.uid and m.uid~=0 then ageCache[m.uid]=m.age end
-                    addMsg(key,m.u,m.t,m.uid,m.age,false)
+                table.sort(list, function(a,b) return a.ts < b.ts end)
+                if first then
+                    first = false
+                    if #list == 0 then sysMsg(key,"📭 Vazio. Seja o primeiro!") else sysMsg(key,"✅ Conectado!") end
                 end
+                for _, m in ipairs(list) do addMsg(key, m.u, m.t, m.uid) end
             else
-                if first then first=false; sysMsg(key,"⚠️ Erro: "..(err or "?").." → vá em 🔧 Debug") end
+                if first then first=false; sysMsg(key,"⚠️ Erro: "..(err or "?").." | Veja 🔧 Debug") end
             end
         end
     end)
 end
-setupChannel("global","global"); setupChannel("brasil","brasil"); setupChannel("usa","usa")
+
+setupChannel("global","global")
+setupChannel("brasil","brasil")
+setupChannel("usa","usa")
 
 -- ══════════════════════════════════════════════════════════
 -- PRESENÇA
 -- ══════════════════════════════════════════════════════════
-local myKey=sfen(MYNAME)
+local myKey = sfen(MYNAME)
+local knownUsers = {}
+
 local function pushPresence()
-    task.spawn(function() fbPut("/presence/"..myKey..".json",{n=MYNAME,uid=MYUID,ts=os.time(),g=MYGAME,age=MY_AGE}) end)
+    task.spawn(function()
+        fbPut("/presence/"..myKey..".json", {n=MYNAME, uid=MYUID, ts=os.time(), g=game.Name})
+    end)
 end
 local function pollPresence()
     task.spawn(function()
-        local data=fbGet("/presence.json")
+        local data = fbGet("/presence.json")
         if not data or type(data)~="table" then return end
-        local now=os.time()
-        for sk,info in pairs(data) do
+        local now = os.time()
+        for sk, info in pairs(data) do
             if sk~=myKey and type(info)=="table" then
-                local fresh=(now-(info.ts or 0))<PRES_EXPIRE
-                if knownPres[sk] and knownPres[sk].alive and not fresh then
-                    knownPres[sk].alive=false
-                    local nm=info.n or sk
-                    for _,ch in ipairs({"global","brasil","usa"}) do sysMsg(ch,"👋 "..nm.." saiu do jogo") end
-                    task.delay(30,function() fbDel("/presence/"..sk..".json") end)
-                elseif not knownPres[sk] and fresh then
-                    knownPres[sk]={n=info.n or sk,alive=true}
+                local fresh = (now-(info.ts or 0)) < PRES_EXPIRE
+                if knownUsers[sk]==nil and fresh then
+                    knownUsers[sk] = {n=info.n or sk, alive=true}
+                elseif knownUsers[sk] and knownUsers[sk].alive and not fresh then
+                    knownUsers[sk].alive = false
+                    local nm = info.n or sk
+                    for _, ch in ipairs({"global","brasil","usa"}) do sysMsg(ch,"👋 "..nm.." saiu") end
+                    task.delay(30, function() fbDel("/presence/"..sk..".json") end)
                 end
             end
         end
@@ -580,213 +637,465 @@ task.spawn(function()
 end)
 
 -- ══════════════════════════════════════════════════════════
--- PRIVATE ROOM
+-- SALA PRIVADA
 -- ══════════════════════════════════════════════════════════
-local privCode=nil; local privKnown={}
+local privCode  = nil
+local privKnown = {}
 
-local function startPrivRoom(code,isCreator)
-    privCode=code; privKnown={}
-    local p=panels["privado"]; if not p then return end
-    -- rebuild scroll
-    for _,c in ipairs(p.fr:GetChildren()) do if not c:IsA("UICorner") then c:Destroy() end end
-    local scH2=ContentH-(INH+34)
-    local scroll2=Instance.new("ScrollingFrame",p.fr)
-    scroll2.Size=UDim2.new(0,WIN_W-12,0,scH2); scroll2.Position=UDim2.new(0,6,0,28)
-    scroll2.BackgroundColor3=Color3.fromRGB(9,7,20); scroll2.BorderSizePixel=0
-    scroll2.ScrollBarThickness=3; scroll2.ScrollBarImageColor3=Color3.fromRGB(140,42,212)
-    scroll2.CanvasSize=UDim2.new(0,0,0,0); scroll2.AutomaticCanvasSize=Enum.AutomaticSize.Y
-    mkCorner(scroll2,10)
-    local ll2=Instance.new("UIListLayout",scroll2); ll2.SortOrder=Enum.SortOrder.LayoutOrder; ll2.Padding=UDim.new(0,2)
-    local sp2=Instance.new("UIPadding",scroll2)
-    sp2.PaddingLeft=UDim.new(0,6); sp2.PaddingRight=UDim.new(0,6); sp2.PaddingTop=UDim.new(0,5); sp2.PaddingBottom=UDim.new(0,5)
-    p.scroll=scroll2; msgCount["privado"]=0
+local function startPrivateRoom(code, isCreator)
+    privCode = code; privKnown = {}
+    local p = panels["privado"]; if not p then return end
+    -- Limpa painel
+    for _, c in ipairs(p.frame:GetChildren()) do c:Destroy() end
 
-    local codeLbl=Instance.new("TextLabel",p.fr)
-    codeLbl.Size=UDim2.new(0,WIN_W-12,0,22); codeLbl.Position=UDim2.new(0,6,0,3)
-    codeLbl.BackgroundTransparency=1; codeLbl.TextXAlignment=Enum.TextXAlignment.Left
-    codeLbl.TextColor3=Color3.fromRGB(175,155,235); codeLbl.TextSize=FSZ-1; codeLbl.Font=Enum.Font.Gotham; codeLbl.RichText=true
-    codeLbl.Text='🔒 Código: <font color="#FFD700"><b>'..code.."</b></font>"..(isCreator and " (criada)" or " (entrou)")
+    -- Scroll
+    local scroll2 = Instance.new("ScrollingFrame", p.frame)
+    scroll2.Size = UDim2.new(1,-8,1,-(IN_H+36)); scroll2.Position = UDim2.new(0,4,0,30)
+    scroll2.BackgroundColor3 = Color3.fromRGB(9,7,20); scroll2.BorderSizePixel = 0
+    scroll2.ScrollBarThickness = 3; scroll2.ScrollBarImageColor3 = Color3.fromRGB(138,42,205)
+    scroll2.CanvasSize = UDim2.new(0,0,0,0); scroll2.AutomaticCanvasSize = Enum.AutomaticSize.Y
+    Instance.new("UICorner", scroll2).CornerRadius = UDim.new(0,8)
+    local ll2 = Instance.new("UIListLayout", scroll2)
+    ll2.SortOrder = Enum.SortOrder.LayoutOrder; ll2.Padding = UDim.new(0,2)
+    local sp2 = Instance.new("UIPadding", scroll2)
+    sp2.PaddingLeft=UDim.new(0,5); sp2.PaddingRight=UDim.new(0,5)
+    sp2.PaddingTop=UDim.new(0,4); sp2.PaddingBottom=UDim.new(0,4)
+    p.scroll = scroll2; msgCount["privado"] = 0
 
-    local iF2=Instance.new("Frame",p.fr)
-    iF2.Size=UDim2.new(0,WIN_W-12,0,INH); iF2.Position=UDim2.new(0,6,0,scH2+34)
-    iF2.BackgroundColor3=Color3.fromRGB(13,9,32); iF2.BorderSizePixel=0; mkCorner(iF2,10); mkStroke(iF2,Color3.fromRGB(112,36,172))
+    -- Label do código
+    local cLbl = Instance.new("TextLabel", p.frame)
+    cLbl.Size = UDim2.new(1,-8,0,24); cLbl.Position = UDim2.new(0,4,0,3)
+    cLbl.BackgroundTransparency = 1; cLbl.TextXAlignment = Enum.TextXAlignment.Left
+    cLbl.TextColor3 = Color3.fromRGB(185,162,240); cLbl.TextSize = FSZ-1; cLbl.Font = Enum.Font.Gotham
+    cLbl.RichText = true
+    cLbl.Text = '🔒 <font color="#FFD700"><b>'..code.."</b></font> "..(isCreator and "· você criou" or "· você entrou")
 
-    local inBox=Instance.new("TextBox",iF2)
+    -- Input
+    local iF2 = Instance.new("Frame", p.frame)
+    iF2.Size = UDim2.new(1,-8,0,IN_H); iF2.Position = UDim2.new(0,4,1,-(IN_H+5))
+    iF2.BackgroundColor3 = Color3.fromRGB(13,10,32); iF2.BorderSizePixel = 0
+    Instance.new("UICorner", iF2).CornerRadius = UDim.new(0,10)
+    Instance.new("UIStroke", iF2).Color = Color3.fromRGB(112,36,170)
+
+    local inBox = Instance.new("TextBox", iF2)
     inBox.PlaceholderText="Mensagem privada..."; inBox.Text=""
-    inBox.Size=UDim2.new(1,-90,1,0); inBox.Position=UDim2.new(0,10,0,0)
+    inBox.Size=UDim2.new(1,-(IN_H+12),1,0); inBox.Position=UDim2.new(0,10,0,0)
     inBox.BackgroundTransparency=1; inBox.TextColor3=Color3.fromRGB(215,205,255)
-    inBox.PlaceholderColor3=Color3.fromRGB(80,60,130); inBox.TextSize=FSZ; inBox.Font=Enum.Font.Gotham
-    inBox.TextXAlignment=Enum.TextXAlignment.Left; inBox.ClearTextOnFocus=false
+    inBox.PlaceholderColor3=Color3.fromRGB(78,58,128); inBox.TextSize=FSZ
+    inBox.Font=Enum.Font.Gotham; inBox.TextXAlignment=Enum.TextXAlignment.Left; inBox.ClearTextOnFocus=false
 
-    local sBtn2=Instance.new("TextButton",iF2)
-    sBtn2.Text="Enviar"; sBtn2.Size=UDim2.new(0,72,0,INH-12); sBtn2.Position=UDim2.new(1,-78,0.5,-(INH-12)/2)
-    sBtn2.BackgroundColor3=Color3.fromRGB(138,36,200); sBtn2.TextColor3=Color3.fromRGB(255,255,255)
-    sBtn2.TextSize=mob and 12 or 11; sBtn2.Font=Enum.Font.GothamBold; sBtn2.BorderSizePixel=0; mkCorner(sBtn2,8)
+    local sBtn2 = Instance.new("TextButton", iF2)
+    sBtn2.Text="➤"; sBtn2.Size=UDim2.new(0,IN_H-4,0,IN_H-8)
+    sBtn2.Position=UDim2.new(1,-(IN_H+2),0.5,-(IN_H-8)/2)
+    sBtn2.BackgroundColor3=Color3.fromRGB(138,36,195); sBtn2.TextColor3=Color3.new(1,1,1)
+    sBtn2.TextSize=mob and 18 or 16; sBtn2.Font=Enum.Font.GothamBold
+    sBtn2.BorderSizePixel=0; sBtn2.AutoButtonColor=false
+    Instance.new("UICorner", sBtn2).CornerRadius=UDim.new(0,8)
     p.input=inBox; p.send=sBtn2
 
-    local function sendPriv(txt)
+    local function addPS(txt)
+        if not p.scroll then return end
+        msgCount["privado"]=(msgCount["privado"] or 0)+1
+        local row=Instance.new("Frame",p.scroll)
+        row.LayoutOrder=msgCount["privado"]; row.BackgroundTransparency=1
+        row.Size=UDim2.new(1,0,0,20); row.AutomaticSize=Enum.AutomaticSize.Y
+        local lb=Instance.new("TextLabel",row)
+        lb.Size=UDim2.new(1,-4,0,0); lb.AutomaticSize=Enum.AutomaticSize.Y
+        lb.Position=UDim2.new(0,2,0,2); lb.BackgroundTransparency=1
+        lb.TextColor3=Color3.fromRGB(162,78,220); lb.TextSize=FSZ-1; lb.Font=Enum.Font.GothamItalic
+        lb.TextWrapped=true; lb.TextXAlignment=Enum.TextXAlignment.Center; lb.Text=tostring(txt)
+        task.defer(function() pcall(function() p.scroll.CanvasPosition=Vector2.new(0,99999) end) end)
+    end
+
+    local function addPM(user, txt, uid2)
+        if not p.scroll then return end
+        msgCount["privado"]=(msgCount["privado"] or 0)+1
+        if msgCount["privado"]>MAX_MSGS then
+            local f=p.scroll:FindFirstChildWhichIsA("Frame")
+            if f then f:Destroy(); msgCount["privado"]=msgCount["privado"]-1 end
+        end
+        local row=Instance.new("Frame",p.scroll)
+        row.LayoutOrder=msgCount["privado"]; row.BackgroundTransparency=0.6
+        row.Size=UDim2.new(1,0,0,AV_SZ+14); row.AutomaticSize=Enum.AutomaticSize.Y
+        row.BackgroundColor3=Color3.fromRGB(24,12,48); row.BorderSizePixel=0
+        Instance.new("UICorner",row).CornerRadius=UDim.new(0,7)
+        local avF=Instance.new("Frame",row)
+        avF.Size=UDim2.new(0,AV_SZ,0,AV_SZ); avF.Position=UDim2.new(0,5,0,6)
+        avF.BackgroundColor3=Color3.fromRGB(42,16,78); avF.BorderSizePixel=0
+        Instance.new("UICorner",avF).CornerRadius=UDim.new(1,0)
+        local avIp=Instance.new("ImageLabel",avF)
+        avIp.Size=UDim2.new(1,0,1,0); avIp.BackgroundTransparency=1; avIp.ScaleType=Enum.ScaleType.Fit
+        Instance.new("UICorner",avIp).CornerRadius=UDim.new(1,0)
+        if uid2 and uid2~=0 then fetchAvatar(uid2,avIp) end
+        local lx=AV_SZ+11
+        local txF=Instance.new("Frame",row)
+        txF.Size=UDim2.new(1,-(lx+5),0,0); txF.AutomaticSize=Enum.AutomaticSize.Y
+        txF.Position=UDim2.new(0,lx,0,5); txF.BackgroundTransparency=1
+        local nc=(user==MYNAME) and "#FFD700" or "#D07AFF"
+        local nl=Instance.new("TextLabel",txF); nl.Size=UDim2.new(1,0,0,14); nl.BackgroundTransparency=1
+        nl.TextSize=FSZ-1; nl.Font=Enum.Font.GothamBold; nl.TextXAlignment=Enum.TextXAlignment.Left
+        nl.RichText=true; nl.Text=('<font color="%s">%s</font>'):format(nc,user)
+        local ml=Instance.new("TextLabel",txF); ml.Size=UDim2.new(1,0,0,0); ml.AutomaticSize=Enum.AutomaticSize.Y
+        ml.Position=UDim2.new(0,0,0,15); ml.BackgroundTransparency=1
+        ml.TextColor3=Color3.fromRGB(208,192,248); ml.TextSize=FSZ; ml.Font=Enum.Font.Gotham
+        ml.TextWrapped=true; ml.TextXAlignment=Enum.TextXAlignment.Left; ml.Text=tostring(txt)
+        task.defer(function() pcall(function() p.scroll.CanvasPosition=Vector2.new(0,99999) end) end)
+    end
+
+    local function sendP(txt)
         txt=txt and txt:match("^%s*(.-)%s*$") or ""; if txt=="" then return end
         task.spawn(function()
-            fbPost("/rooms/"..code.."/msgs.json",{u=MYNAME,uid=MYUID,t=txt,ts=os.time(),age=MY_AGE})
+            fbPost("/rooms/"..code.."/msgs.json",{u=MYNAME,uid=MYUID,t=txt,ts=os.time()})
         end)
         inBox.Text=""
     end
-    sBtn2.MouseButton1Click:Connect(function() sendPriv(inBox.Text) end)
-    inBox.FocusLost:Connect(function(e) if e then sendPriv(inBox.Text) end end)
-    sysMsg("privado","🔒 Sala: "..code..(isCreator and " — aguardando amigo..." or " — conectado!"))
+    sBtn2.MouseButton1Click:Connect(function() sendP(inBox.Text) end)
+    inBox.FocusLost:Connect(function(enter) if enter then sendP(inBox.Text) end end)
+
+    addPS("🔒 Sala: "..code..(isCreator and " — aguarde amigo..." or " — você entrou!"))
 
     task.spawn(function()
         local first=true
         while Main.Parent and privCode==code do
-            task.wait(first and 0.7 or POLL_INT)
-            local d2,e2=fbList("rooms/"..code.."/msgs")
-            if d2 and type(d2)=="table" then
+            task.wait(first and 0.5 or POLL_INT)
+            local data2,err2 = fbList("rooms/"..code.."/msgs")
+            if data2 and type(data2)=="table" then
                 local list2={}
-                for k,v in pairs(d2) do
+                for k,v in pairs(data2) do
                     if type(v)=="table" and not privKnown[k] then
-                        privKnown[k]=true; table.insert(list2,{ts=v.ts or 0,u=v.u or "?",t=v.t or "",uid=v.uid or 0,age=v.age or 0})
+                        privKnown[k]=true
+                        table.insert(list2,{ts=v.ts or 0,u=v.u or "?",t=v.t or "",uid=v.uid or 0})
                     end
                 end
                 table.sort(list2,function(a,b) return a.ts<b.ts end)
-                if first then first=false; if #list2==0 then sysMsg("privado","📭 Aguardando amigo...") end end
-                for _,m in ipairs(list2) do addMsg("privado",m.u,m.t,m.uid,m.age,false) end
+                if first then first=false
+                    if #list2==0 then addPS("📭 Sala vazia. Manda o código pro amigo!") else addPS("✅ Sala ativa!") end
+                end
+                for _,m in ipairs(list2) do addPM(m.u,m.t,m.uid) end
             else
-                if first then first=false; sysMsg("privado","⚠️ Erro ao carregar sala.") end
+                if first then first=false; addPS("⚠️ Erro: "..(err2 or "?")) end
             end
         end
     end)
     switchTab("privado")
 end
 
--- Private room UI
+-- UI de criação/entrada na sala privada
 task.defer(function()
     task.wait(0.5)
-    local p=panels["privado"]; if not p then return end
-    sysMsg("privado","🔒 Crie ou entre em uma sala privada.")
+    local p = panels["privado"]; if not p then return end
+    sysMsg("privado","🔒 Sala Privada Global")
+    sysMsg("privado","Crie ou entre com código")
 
-    local ctrlF=Instance.new("Frame",p.fr)
-    ctrlF.Name="PrivCtrl"; ctrlF.Size=UDim2.new(0,WIN_W-12,0,INH*2+20)
-    ctrlF.Position=UDim2.new(0,6,0.5,-(INH+10)); ctrlF.BackgroundTransparency=1
-    local cll=Instance.new("UIListLayout",ctrlF)
-    cll.FillDirection=Enum.FillDirection.Vertical; cll.Padding=UDim.new(0,10); cll.HorizontalAlignment=Enum.HorizontalAlignment.Center
+    local ctrl = Instance.new("Frame", p.frame)
+    ctrl.Name = "PrivCtrl"; ctrl.AnchorPoint = Vector2.new(0.5,0.5)
+    ctrl.Size = UDim2.new(0.90,0,0,0); ctrl.AutomaticSize = Enum.AutomaticSize.Y
+    ctrl.Position = UDim2.new(0.5,0,0.46,0); ctrl.BackgroundTransparency = 1
+    local cll = Instance.new("UIListLayout",ctrl)
+    cll.FillDirection=Enum.FillDirection.Vertical; cll.Padding=UDim.new(0,10)
+    cll.HorizontalAlignment=Enum.HorizontalAlignment.Center
 
-    local cBtn=Instance.new("TextButton",ctrlF)
-    cBtn.Text="✨ Criar Sala Privada"; cBtn.Size=UDim2.new(1,0,0,INH)
-    cBtn.BackgroundColor3=Color3.fromRGB(88,36,185); cBtn.TextColor3=Color3.fromRGB(255,255,255)
-    cBtn.TextSize=mob and 14 or 12; cBtn.Font=Enum.Font.GothamBold; cBtn.BorderSizePixel=0; mkCorner(cBtn,10)
+    local cBtn = Instance.new("TextButton",ctrl)
+    cBtn.Text="✨ Criar Sala Privada"; cBtn.Size=UDim2.new(1,0,0,IN_H+4)
+    cBtn.BackgroundColor3=Color3.fromRGB(88,36,182); cBtn.TextColor3=Color3.new(1,1,1)
+    cBtn.TextSize=mob and 13 or 12; cBtn.Font=Enum.Font.GothamBold; cBtn.BorderSizePixel=0
+    cBtn.AutoButtonColor=false
+    Instance.new("UICorner",cBtn).CornerRadius=UDim.new(0,10)
+    cBtn.MouseEnter:Connect(function() Tween:Create(cBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(112,55,215)}):Play() end)
+    cBtn.MouseLeave:Connect(function() Tween:Create(cBtn,TweenInfo.new(0.12),{BackgroundColor3=Color3.fromRGB(88,36,182)}):Play() end)
 
-    local jRow=Instance.new("Frame",ctrlF)
-    jRow.Size=UDim2.new(1,0,0,INH); jRow.BackgroundColor3=Color3.fromRGB(13,10,32); jRow.BorderSizePixel=0; mkCorner(jRow,10); mkStroke(jRow,Color3.fromRGB(78,46,162))
+    local joinF = Instance.new("Frame",ctrl)
+    joinF.Size=UDim2.new(1,0,0,IN_H+4); joinF.BackgroundColor3=Color3.fromRGB(13,10,32); joinF.BorderSizePixel=0
+    Instance.new("UICorner",joinF).CornerRadius=UDim.new(0,10)
+    local jSt = Instance.new("UIStroke",joinF); jSt.Color=Color3.fromRGB(78,46,162)
 
-    local cBox=Instance.new("TextBox",jRow)
-    cBox.PlaceholderText="Código (ex: AB3X7K)"; cBox.Text=""
-    cBox.Size=UDim2.new(1,-98,1,0); cBox.Position=UDim2.new(0,10,0,0)
-    cBox.BackgroundTransparency=1; cBox.TextColor3=Color3.fromRGB(220,210,255)
-    cBox.PlaceholderColor3=Color3.fromRGB(78,65,128); cBox.TextSize=FSZ; cBox.Font=Enum.Font.Gotham
-    cBox.TextXAlignment=Enum.TextXAlignment.Left; cBox.ClearTextOnFocus=false
+    local codeBox2 = Instance.new("TextBox",joinF)
+    codeBox2.PlaceholderText="Código da sala..."; codeBox2.Text=""
+    codeBox2.Size=UDim2.new(1,-(IN_H+16),1,0); codeBox2.Position=UDim2.new(0,10,0,0)
+    codeBox2.BackgroundTransparency=1; codeBox2.TextColor3=Color3.fromRGB(220,210,255)
+    codeBox2.PlaceholderColor3=Color3.fromRGB(78,64,128); codeBox2.TextSize=FSZ
+    codeBox2.Font=Enum.Font.Gotham; codeBox2.TextXAlignment=Enum.TextXAlignment.Left
+    codeBox2.ClearTextOnFocus=false
 
-    local jBtn=Instance.new("TextButton",jRow)
-    jBtn.Text="Entrar"; jBtn.Size=UDim2.new(0,80,0,INH-10); jBtn.Position=UDim2.new(1,-86,0.5,-(INH-10)/2)
-    jBtn.BackgroundColor3=Color3.fromRGB(28,115,52); jBtn.TextColor3=Color3.fromRGB(255,255,255)
-    jBtn.TextSize=mob and 13 or 11; jBtn.Font=Enum.Font.GothamBold; jBtn.BorderSizePixel=0; mkCorner(jBtn,8)
+    local jBtn = Instance.new("TextButton",joinF)
+    jBtn.Text="➤"; jBtn.Size=UDim2.new(0,IN_H-2,0,IN_H-4)
+    jBtn.Position=UDim2.new(1,-(IN_H+4),0.5,-(IN_H-4)/2)
+    jBtn.BackgroundColor3=Color3.fromRGB(26,112,52); jBtn.TextColor3=Color3.new(1,1,1)
+    jBtn.TextSize=mob and 18 or 16; jBtn.Font=Enum.Font.GothamBold
+    jBtn.BorderSizePixel=0; jBtn.AutoButtonColor=false
+    Instance.new("UICorner",jBtn).CornerRadius=UDim.new(0,8)
 
     cBtn.MouseButton1Click:Connect(function()
-        cBtn.Text="⏳ Criando..."; cBtn.BackgroundColor3=Color3.fromRGB(55,22,118)
+        cBtn.Text="⏳ Criando..."; cBtn.Active=false
         task.spawn(function()
-            local code=mkCode()
+            local code = mkCode()
             fbPut("/rooms/"..code.."/info.json",{c=MYNAME,uid=MYUID,ts=os.time()})
-            ctrlF:Destroy(); startPrivRoom(code,true)
+            ctrl:Destroy(); startPrivateRoom(code,true)
         end)
     end)
     local function doJoin()
-        local code=cBox.Text:upper():gsub("%s",""); if #code<4 then sysMsg("privado","⚠️ Código inválido."); return end
-        jBtn.Text="⏳"; jBtn.BackgroundColor3=Color3.fromRGB(18,76,34)
+        local code = codeBox2.Text:upper():gsub("%s","")
+        if #code < 4 then sysMsg("privado","⚠️ Código inválido!"); return end
+        jBtn.Text="⏳"; jBtn.Active=false
         task.spawn(function()
-            local info=fbGet("/rooms/"..code.."/info.json")
+            local info = fbGet("/rooms/"..code.."/info.json")
             if info and type(info)=="table" and info.c then
-                ctrlF:Destroy(); startPrivRoom(code,false)
+                ctrl:Destroy(); startPrivateRoom(code,false)
             else
-                jBtn.Text="Entrar"; jBtn.BackgroundColor3=Color3.fromRGB(28,115,52)
+                jBtn.Text="➤"; jBtn.Active=true
                 sysMsg("privado","❌ Sala não encontrada!")
             end
         end)
     end
     jBtn.MouseButton1Click:Connect(doJoin)
-    cBox.FocusLost:Connect(function(e) if e then doJoin() end end)
+    codeBox2.FocusLost:Connect(function(e) if e then doJoin() end end)
 end)
 
 -- ══════════════════════════════════════════════════════════
 -- DEBUG
 -- ══════════════════════════════════════════════════════════
 local function runDiag()
-    sysMsg("debug","🔍 Diagnóstico...")
+    sysMsg("debug","🔍 Iniciando diagnóstico...")
     task.wait(0.1)
-    addMsg("debug","HTTP","Função: "..httpName,0,0,false)
-    if not httpFn and not useHttp then sysMsg("debug","❌ Nenhuma função HTTP!"); return end
-    sysMsg("debug","📡 Testando Firebase..."); task.wait(0.1)
-    local res=doReq({Url=FIREBASE_URL.."/ping.json",Method="GET"})
-    if not res then sysMsg("debug","❌ Sem resposta! Verifique internet."); return end
-    local code=tostring(res.StatusCode or res.status_code or "?")
-    local body=tostring(res.Body or res.body or "")
-    addMsg("debug","Status","HTTP "..code,0,0,false)
-    if body:find("Permission denied") or code=="401" then
-        sysMsg("debug","❌ Firebase bloqueado! Vá em Regras → read/write: true"); return
+    addMsg("debug","HTTP","Função: "..httpName,0,false)
+    if not httpFn and not useHttpSvc then
+        sysMsg("debug","❌ Sem HTTP! Ative a rede/internet no executor.")
+        return
     end
-    if code=="200" or res.Success then sysMsg("debug","✅ Tudo OK!") else addMsg("debug","Resp",body:sub(1,55),0,0,false) end
+    sysMsg("debug","📡 Testando Firebase...")
+    local res = doRequest({Url=FIREBASE_URL.."/ping.json", Method="GET"})
+    if not res then sysMsg("debug","❌ Sem resposta do Firebase!"); return end
+    local code = tostring(res.StatusCode or res.status_code or "?")
+    local body = tostring(res.Body or res.body or "")
+    if body:find("Permission denied") or code=="401" then
+        sysMsg("debug","❌ Firebase bloqueado! Vá nas Regras do DB → read/write: true"); return
+    end
+    if code=="200" or res.Success then
+        sysMsg("debug","✅ Firebase OK! Tudo funcionando.")
+    else
+        sysMsg("debug","⚠️ HTTP "..code.." | "..body:sub(1,50))
+    end
 end
+
 task.defer(function()
     task.wait(0.5)
-    sysMsg("debug","Pressione o botão para testar.")
-    addMsg("debug","Info","HTTP: "..httpName,0,0,false)
-    local p=panels["debug"]; if not p then return end
-    local db=Instance.new("TextButton",p.fr)
-    db.Text="🔍 Testar Conexão"; db.Size=UDim2.new(0,WIN_W-12,0,40); db.Position=UDim2.new(0,6,0,ContentH-46)
-    db.BackgroundColor3=Color3.fromRGB(30,118,50); db.TextColor3=Color3.fromRGB(255,255,255)
-    db.TextSize=mob and 14 or 12; db.Font=Enum.Font.GothamBold; db.BorderSizePixel=0; mkCorner(db,10)
+    sysMsg("debug","Executor: "..httpName)
+    sysMsg("debug","Pressione o botão para testar a conexão.")
+    local p = panels["debug"]; if not p then return end
+    local db = Instance.new("TextButton",p.frame)
+    db.Text="🔍 Testar Conexão"; db.Size=UDim2.new(1,-8,0,40)
+    db.Position=UDim2.new(0,4,1,-45)
+    db.BackgroundColor3=Color3.fromRGB(30,115,50); db.TextColor3=Color3.new(1,1,1)
+    db.TextSize=mob and 13 or 12; db.Font=Enum.Font.GothamBold; db.BorderSizePixel=0
+    db.AutoButtonColor=false
+    Instance.new("UICorner",db).CornerRadius=UDim.new(0,10)
     db.MouseButton1Click:Connect(function()
-        db.Text="Testando..."; db.BackgroundColor3=Color3.fromRGB(18,78,32)
-        task.spawn(function() runDiag(); task.wait(2); db.Text="🔍 Testar Conexão"; db.BackgroundColor3=Color3.fromRGB(30,118,50) end)
+        db.Text="Testando..."; db.BackgroundColor3=Color3.fromRGB(18,78,35)
+        task.spawn(function()
+            runDiag(); task.wait(2.5)
+            db.Text="🔍 Testar Conexão"; db.BackgroundColor3=Color3.fromRGB(30,115,50)
+        end)
     end)
 end)
 
 -- ══════════════════════════════════════════════════════════
--- DRAG
+-- ARRASTAR JANELA
 -- ══════════════════════════════════════════════════════════
 do
-    local drag,ds,dp=false,nil,nil
+    local drag, ds, dp = false, nil, nil
     TBar.InputBegan:Connect(function(i)
         if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
             drag=true; ds=i.Position; dp=Main.Position
         end
     end)
     TBar.InputEnded:Connect(function(i)
-        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=false end
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
+            drag=false
+        end
     end)
     UIS.InputChanged:Connect(function(i)
         if drag and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
-            local d=i.Position-ds; Main.Position=UDim2.new(dp.X.Scale,dp.X.Offset+d.X,dp.Y.Scale,dp.Y.Offset+d.Y)
+            local d = i.Position - ds
+            Main.Position = UDim2.new(dp.X.Scale, dp.X.Offset+d.X, dp.Y.Scale, dp.Y.Offset+d.Y)
         end
     end)
 end
 
 -- ══════════════════════════════════════════════════════════
--- MIN / CLOSE
+-- MINIMIZAR → BOLINHA  /  FECHAR
 -- ══════════════════════════════════════════════════════════
-local minimized=false
+local minimized = false
+local savedPos  = Main.Position
+
 MinBtn.MouseButton1Click:Connect(function()
-    minimized=not minimized
-    Tween:Create(Main,TweenInfo.new(0.28,Enum.EasingStyle.Quart),{Size=minimized and UDim2.new(0,WIN_W,0,TH) or UDim2.new(0,WIN_W,0,WIN_H)}):Play()
-    MinBtn.Text=minimized and "□" or "−"
+    minimized = not minimized
+    if minimized then
+        savedPos = Main.Position
+        Tween:Create(Main, TweenInfo.new(0.28,Enum.EasingStyle.Quart,Enum.EasingDirection.In),
+            {Size=UDim2.new(0,0,0,0)}):Play()
+        task.delay(0.28, function()
+            Main.Visible = false
+            unreadCount = 0
+            Bubble.Visible = true
+            Bubble.Size = UDim2.new(0,0,0,0)
+            Tween:Create(Bubble, TweenInfo.new(0.32,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
+                {Size=UDim2.new(0,54,0,54)}):Play()
+        end)
+    else
+        Bubble.Visible = false
+        Main.Visible = true
+        Main.Position = savedPos
+        Main.Size = UDim2.new(0,0,0,0)
+        Tween:Create(Main, TweenInfo.new(0.35,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
+            {Size=UDim2.new(0,WIN_W,0,WIN_H)}):Play()
+    end
+    MinBtn.Text = minimized and "□" or "−"
 end)
+
 CloseBtn.MouseButton1Click:Connect(function()
     task.spawn(function() fbDel("/presence/"..myKey..".json") end)
-    Tween:Create(Main,TweenInfo.new(0.22,Enum.EasingStyle.Quad,Enum.EasingDirection.In),{Size=UDim2.new(0,WIN_W,0,0)}):Play()
-    task.delay(0.25,function() SG:Destroy() end)
+    Tween:Create(Main, TweenInfo.new(0.22,Enum.EasingStyle.Back,Enum.EasingDirection.In),
+        {Size=UDim2.new(0,0,0,0)}):Play()
+    Bubble.Visible = false
+    task.delay(0.25, function() SG:Destroy() end)
 end)
 
 -- ══════════════════════════════════════════════════════════
--- START
+-- AGE GATE — tela de idade antes do chat abrir
 -- ══════════════════════════════════════════════════════════
-switchTab("local")
-amInput:CaptureFocus()
-print("[GlobalChatHub v4] OK | User:"..MYNAME.." | HTTP:"..httpName)
+local function openMainChat()
+    Main.Visible = true
+    Main.Size = UDim2.new(0,0,0,0)
+    task.delay(0.06, function()
+        Tween:Create(Main, TweenInfo.new(0.42,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
+            {Size=UDim2.new(0,WIN_W,0,WIN_H)}):Play()
+    end)
+    switchTab("local")
+end
+
+do
+    -- Frame de fundo escurecido
+    local overlay = Instance.new("Frame", SG)
+    overlay.Size = UDim2.new(1,0,1,0)
+    overlay.BackgroundColor3 = Color3.fromRGB(0,0,0)
+    overlay.BackgroundTransparency = 0.35
+    overlay.BorderSizePixel = 0
+    overlay.ZIndex = 50
+
+    -- Card central
+    local card = Instance.new("Frame", SG)
+    card.AnchorPoint = Vector2.new(0.5,0.5)
+    card.Position = UDim2.new(0.5,0,0.5,0)
+    card.Size = UDim2.new(0,0,0,0)
+    card.BackgroundColor3 = Color3.fromRGB(9,7,22)
+    card.BorderSizePixel = 0
+    card.ZIndex = 51
+    card.ClipsDescendants = true
+    Instance.new("UICorner", card).CornerRadius = UDim.new(0,16)
+    local cSt = Instance.new("UIStroke", card)
+    cSt.Color = Color3.fromRGB(88,52,205); cSt.Thickness = 1.8
+    local cGrad = Instance.new("UIGradient", card)
+    cGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, Color3.fromRGB(16,11,38)),
+        ColorSequenceKeypoint.new(1, Color3.fromRGB(8,6,20))
+    }); cGrad.Rotation = 135
+
+    local CARD_W = mob and math.min(math.floor(vp.X*0.86), 360) or 360
+    local CARD_H = mob and 310 or 290
+
+    -- Animação de entrada do card
+    task.delay(0.1, function()
+        Tween:Create(card, TweenInfo.new(0.45,Enum.EasingStyle.Back,Enum.EasingDirection.Out),
+            {Size=UDim2.new(0,CARD_W,0,CARD_H)}):Play()
+    end)
+
+    -- Ícone 🔞
+    local ico = Instance.new("TextLabel", card)
+    ico.Size = UDim2.new(1,0,0, mob and 52 or 46)
+    ico.Position = UDim2.new(0,0,0, mob and 18 or 14)
+    ico.BackgroundTransparency = 1
+    ico.Text = "🔞"; ico.TextSize = mob and 36 or 30
+    ico.Font = Enum.Font.GothamBold; ico.ZIndex = 52
+
+    -- Título
+    local title = Instance.new("TextLabel", card)
+    title.Size = UDim2.new(1,-24,0, mob and 28 or 24)
+    title.Position = UDim2.new(0,12,0, mob and 68 or 58)
+    title.BackgroundTransparency = 1
+    title.Text = "Qual é a sua idade?"
+    title.TextColor3 = Color3.fromRGB(228,218,255)
+    title.TextSize = mob and 18 or 16
+    title.Font = Enum.Font.GothamBold
+    title.ZIndex = 52
+
+    -- Subtítulo
+    local sub = Instance.new("TextLabel", card)
+    sub.Size = UDim2.new(1,-28,0,0)
+    sub.AutomaticSize = Enum.AutomaticSize.Y
+    sub.Position = UDim2.new(0,14,0, mob and 100 or 88)
+    sub.BackgroundTransparency = 1
+    sub.Text = "ℹ️  Isso não afetará seu chat.\nVocê poderá conversar com quem quiser."
+    sub.TextColor3 = Color3.fromRGB(120,108,185)
+    sub.TextSize = mob and 12 or 11
+    sub.Font = Enum.Font.Gotham
+    sub.TextWrapped = true
+    sub.TextXAlignment = Enum.TextXAlignment.Center
+    sub.ZIndex = 52
+
+    -- Faixas etárias
+    local ages = {
+        {lbl="Menos de 13", ico="🧒", col=Color3.fromRGB(55,110,200)},
+        {lbl="13 – 17 anos", ico="🧑", col=Color3.fromRGB(72,48,185)},
+        {lbl="18 anos ou +", ico="🧑‍💼", col=Color3.fromRGB(50,130,80)},
+    }
+
+    local btnY = mob and 158 or 142
+    local btnH = mob and 42 or 38
+    local btnGap = mob and 8 or 7
+    local btnW = CARD_W - 32
+
+    for i, age in ipairs(ages) do
+        local btn = Instance.new("TextButton", card)
+        btn.Size = UDim2.new(0,btnW,0,btnH)
+        btn.Position = UDim2.new(0,16,0, btnY + (i-1)*(btnH+btnGap))
+        btn.BackgroundColor3 = age.col
+        btn.TextColor3 = Color3.new(1,1,1)
+        btn.Text = age.ico .. "  " .. age.lbl
+        btn.TextSize = mob and 14 or 13
+        btn.Font = Enum.Font.GothamBold
+        btn.BorderSizePixel = 0
+        btn.AutoButtonColor = false
+        btn.ZIndex = 53
+        Instance.new("UICorner", btn).CornerRadius = UDim.new(0,10)
+
+        -- Stroke sutil
+        local bSt2 = Instance.new("UIStroke", btn)
+        bSt2.Color = Color3.new(1,1,1); bSt2.Transparency = 0.82; bSt2.Thickness = 1
+
+        btn.MouseEnter:Connect(function()
+            Tween:Create(btn,TweenInfo.new(0.12),{BackgroundTransparency=0.22}):Play()
+        end)
+        btn.MouseLeave:Connect(function()
+            Tween:Create(btn,TweenInfo.new(0.12),{BackgroundTransparency=0}):Play()
+        end)
+
+        btn.MouseButton1Click:Connect(function()
+            -- Salva faixa escolhida (opcional: usar em tags, presença, etc.)
+            _G.GCH_AgeGroup = age.lbl
+
+            -- Anima saída do card
+            Tween:Create(card, TweenInfo.new(0.28,Enum.EasingStyle.Quart,Enum.EasingDirection.In),
+                {Size=UDim2.new(0,0,0,0)}):Play()
+            Tween:Create(overlay, TweenInfo.new(0.28),{BackgroundTransparency=1}):Play()
+            task.delay(0.3, function()
+                card:Destroy(); overlay:Destroy()
+                openMainChat()
+            end)
+        end)
+    end
+end
+
+-- ══════════════════════════════════════════════════════════
+-- INÍCIO
+-- ══════════════════════════════════════════════════════════
+print("[GlobalChatHub v4] ✅ | "..MYNAME.." | HTTP: "..httpName)
