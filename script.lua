@@ -474,7 +474,7 @@ local function addMsg(key, user, text, uid, isSys)
         lb.Size = UDim2.new(1,-4,0,0); lb.AutomaticSize = Enum.AutomaticSize.Y
         lb.Position = UDim2.new(0,2,0,2); lb.BackgroundTransparency = 1
         lb.TextColor3 = Color3.fromRGB(112,102,175); lb.TextSize = FSZ-1
-        lb.Font = Enum.Font.GothamItalic; lb.TextWrapped = true
+        lb.Font = Enum.Font.Gotham; lb.TextWrapped = true
         lb.TextXAlignment = Enum.TextXAlignment.Center; lb.RichText = true
         lb.Text = tostring(text)
     else
@@ -702,7 +702,7 @@ local function startPrivateRoom(code, isCreator)
         local lb=Instance.new("TextLabel",row)
         lb.Size=UDim2.new(1,-4,0,0); lb.AutomaticSize=Enum.AutomaticSize.Y
         lb.Position=UDim2.new(0,2,0,2); lb.BackgroundTransparency=1
-        lb.TextColor3=Color3.fromRGB(162,78,220); lb.TextSize=FSZ-1; lb.Font=Enum.Font.GothamItalic
+        lb.TextColor3=Color3.fromRGB(162,78,220); lb.TextSize=FSZ-1; lb.Font=Enum.Font.Gotham
         lb.TextWrapped=true; lb.TextXAlignment=Enum.TextXAlignment.Center; lb.Text=tostring(txt)
         task.defer(function() pcall(function() p.scroll.CanvasPosition=Vector2.new(0,99999) end) end)
     end
